@@ -23,11 +23,13 @@ archives = [build / p for p in ('src/compiler/nir/libnir.a', 'src/compiler/libco
     'src/util/libmesa_util.a', 'src/util/libmesa_util_simd.a',
     'src/util/libmesa_util_clflush.a', 'src/util/libmesa_util_clflushopt.a',
     'src/util/blake3/libblake3.a', 'src/c11/impl/libmesa_util_c11.a')]
-with tempfile.TemporaryDirectory(prefix='eden-nir-flags-') as tmp:
-    exe = Path(tmp) / 'check'
-    subprocess.run([os.environ.get('CXX', 'clang++-18'), '-std=c++20', '-O1',
-        '-Wno-macro-redefined', *includes, '-I' + str(root / 'headless'),
-        str(root / 'tools/check-nir-integer-flags.cpp'), '-o', str(exe),
-        '-Wl,--start-group', *map(str, archives), '-Wl,--end-group',
-        '-l:' + (ctypes.util.find_library('zstd') or 'libzstd.so'), '-lz', '-ldl', '-pthread', '-lm'], cwd=build, check=True)
-    subprocess.run([str(exe)], check=True, timeout=60)
+with tempfile.TemporaryDirectory(prefix='eden-nir-ops-') as tmp:
+    for source in ('check-nir-integer-flags.cpp', 'check-nir-compute-ops.cpp'):
+        exe = Path(tmp) / Path(source).stem
+        subprocess.run([os.environ.get('CXX', 'clang++-18'), '-std=c++20', '-O1',
+            '-Wno-macro-redefined', *includes, '-I' + str(root / 'headless'),
+            str(root / 'tools' / source), '-o', str(exe),
+            '-Wl,--start-group', *map(str, archives), '-Wl,--end-group',
+            '-l:' + (ctypes.util.find_library('zstd') or 'libzstd.so'), '-lz', '-ldl', '-pthread', '-lm'],
+            cwd=build, check=True)
+        subprocess.run([str(exe)], check=True, timeout=60)

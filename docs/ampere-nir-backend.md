@@ -169,6 +169,26 @@ bit-by-bit oracle for all 65,536 16-bit words, every 32-bit power of two and its
 `UINT32_MAX`, and 4,096 deterministic random words (69,729 cases). Integer-flag regressions
 continue to run alongside it. Console qualification follows the remaining operation work.
 
+## Remaining compute-operation follow-up
+
+The expanded-compute switch now covers these additional operations:
+
+- `GetCbufF32` shares the raw 32-bit UBO-word load with `GetCbufU32`, preserving bit patterns,
+  four-byte alignment and the existing dynamic-offset robustness workaround.
+- `PackUint2x32` packs the first word into the low 32 bits and the second into the high 32 bits.
+- `WriteStorage128` writes four words with a full component mask at the byte offset rounded
+  down to 16 bytes, matching the descriptor-aliasing SPIR-V path. Other binding models fall back.
+- `ImageSampleExplicitLod` uses a combined texture/sampler dereference, float coordinates,
+  explicit scalar LOD and optional constant integer offset. It supports the existing 1D/2D/3D
+  and 1D/2D-array declarations, including integer sampled-image results. Sparse/depth sampling,
+  unsupported declarations and dynamic offsets keep the SPIR-V fallback.
+
+The host checker also runs 4,240 word-packing cases through real Mesa folding, checks raw
+UBO/SSBO types, binding operands, range metadata, alignment and write masks at ten address
+boundaries, and checks twenty texture dimensionality/array/integer/offset combinations using
+the production NIR instruction builders. These structural checks do not replace console
+sampling validation; fresh-cache coverage, visual and resource comparisons follow this change.
+
 ## Reproduce
 
     # env.txt on the console, fresh shader cache

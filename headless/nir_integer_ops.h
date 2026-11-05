@@ -11,6 +11,10 @@ inline nir_def* EmitFindUMsb32(nir_builder* b, nir_def* value) {
     return nir_ufind_msb(b, value);
 }
 
+inline nir_def* EmitPackUint2x32(nir_builder* b, nir_def* value) {
+    return nir_pack_64_2x32(b, value);
+}
+
 enum class IntegerFlag { Zero, Sign, Carry, Overflow };
 
 // All inputs/results are 32-bit words; flags are NIR booleans. Only called for requested flags.

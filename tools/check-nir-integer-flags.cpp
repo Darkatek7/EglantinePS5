@@ -93,6 +93,28 @@ static void CheckFind(uint32_t value) {
     ralloc_free(b.shader);
 }
 
+static unsigned pack_cases;
+
+static void CheckPack(uint32_t low, uint32_t high) {
+    static const nir_shader_compiler_options options{};
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, &options, "pack_uint2x32");
+    nir_def* result = Eden::Nir::EmitPackUint2x32(
+        &b, nir_imm_ivec2(&b, static_cast<int>(low), static_cast<int>(high)));
+    if (result->num_components != 1 || result->bit_size != 64) std::abort();
+    nir_intrinsic_instr* store = _nir_build_store_ssbo(
+        &b, result, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+        _nir_store_ssbo_indices{0, 1, static_cast<gl_access_qualifier>(0), 8, 0, 0});
+    while (nir_opt_constant_folding(b.shader)) {}
+    const uint64_t expected = uint64_t(low) | (uint64_t(high) << 32);
+    if (!nir_src_is_const(store->src[0]) ||
+        nir_src_as_const_value(store->src[0])[0].u64 != expected) {
+        std::fprintf(stderr, "PackUint2x32 mismatch for %08x %08x\n", low, high);
+        std::abort();
+    }
+    ++pack_cases;
+    ralloc_free(b.shader);
+}
+
 int main() {
     glsl_type_singleton_init_or_ref();
     constexpr std::array<uint32_t, 12> edges{0, 1, 2, 0x7ffffffe, 0x7fffffff, 0x80000000,
@@ -122,7 +144,10 @@ int main() {
     }
     CheckFind(UINT32_MAX);
     for (unsigned i = 0; i < 4096; ++i) CheckFind(random());
+    for (const auto low : edges) for (const auto high : edges) CheckPack(low, high);
+    for (unsigned i = 0; i < 4096; ++i) CheckPack(random(), random());
     glsl_type_singleton_decref();
+    std::printf("NIR PackUint2x32: %u real Mesa folding cases PASS\n", pack_cases);
     std::printf("NIR FindUMsb32: %u real Mesa folding cases PASS\n", find_cases);
     std::printf("NIR integer flags: %u cases, real Mesa folding, zero/sign/carry/overflow PASS\n", cases);
 }

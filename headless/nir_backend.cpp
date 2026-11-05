@@ -39,6 +39,7 @@
 #include "compiler/nir/nir_control_flow.h"
 #include "vk_shader_module.h"
 #include "nir_integer_ops.h"
+#include "nir_compute_ops.h"
 
 namespace {
 
@@ -751,6 +752,38 @@ private:
         return &tex->def;
     }
 
+    nir_def* ImageSampleExplicitLod(IR::Inst& inst) {
+        const auto tex_info{inst.Flags<IR::TextureInstInfo>()};
+        const u32 descriptor{tex_info.descriptor_index.Value()};
+        if (inst.HasAssociatedPseudoOperation() || tex_info.is_depth != 0 ||
+            descriptor >= texture_vars.size() || texture_vars[descriptor] == nullptr) {
+            Fail("unsupported explicit LOD sample");
+        }
+        const TextureDescriptor& desc{info.texture_descriptors[descriptor]};
+        const TextureType type{tex_info.type.Value()};
+        if (desc.type != type) Fail("sample texture type");
+        const Dimension dim{DimensionOf(type)};
+        nir_def* const coords{Def(inst.Arg(1))};
+        nir_def* const lod{Def(inst.Arg(2))};
+        if (coords->num_components != dim.coords || lod->num_components != 1) {
+            Fail("sample coordinates or LOD");
+        }
+        nir_def* offset{};
+        if (!inst.Arg(3).IsEmpty()) {
+            const IR::Value value{inst.Arg(3).Resolve()};
+            if (!value.IsImmediate() && !value.InstRecursive()->AreAllArgsImmediates()) {
+                Fail("dynamic sample offset");
+            }
+            offset = Def(inst.Arg(3));
+            if (offset->num_components != dim.coords - unsigned(dim.array)) {
+                Fail("sample offset shape");
+            }
+        }
+        return &Eden::Nir::EmitSampleExplicitLod(&b, texture_vars[descriptor], dim.dim,
+                                                dim.array, desc.is_integer, coords, lod,
+                                                offset)->def;
+    }
+
     void ImageWrite(IR::Inst& inst) {
         const auto tex_info{inst.Flags<IR::TextureInstInfo>()};
         const TextureType type{tex_info.type.Value()};
@@ -864,13 +897,15 @@ private:
         case Opcode::UndefU32:
             Set(inst, Undef(32));
             return;
+        case Opcode::GetCbufF32:
+            RequireExtendedCompute();
+            [[fallthrough]];
         case Opcode::GetCbufU32: {
             nir_def* const offset{WordOffset(inst.Arg(1))};
-            nir_def* value{_nir_build_load_ubo(
-                &b, 1, 32, CbufDescriptor(inst.Arg(0)), offset,
-                _nir_load_ubo_indices{0, ACCESS_NON_WRITEABLE, 4, 0,
-                                      inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~3U) : 0U,
-                                      inst.Arg(1).IsImmediate() ? 4U : 65536U})};
+            nir_def* value{Eden::Nir::EmitCbufWord(
+                &b, CbufDescriptor(inst.Arg(0)), offset,
+                inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~3U) : 0U,
+                inst.Arg(1).IsImmediate() ? 4U : 65536U)};
             if (!inst.Arg(1).IsImmediate() && profile.has_broken_robust) {
                 value = nir_bcsel(&b, nir_ult_imm(&b, nir_ushr_imm(&b, offset, 2), 0x10000), value,
                                   nir_imm_int(&b, 0));
@@ -911,6 +946,13 @@ private:
             Set(inst, _nir_build_load_ssbo(&b, 1, 32, SsboDescriptor(inst.Arg(0)),
                                            WordOffset(inst.Arg(1)),
                                            _nir_load_ssbo_indices{0, kNoAccess, 4, 0, 0}));
+            return;
+        case Opcode::WriteStorage128:
+            RequireExtendedCompute();
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector storage buffer without descriptor aliasing");
+            }
+            Eden::Nir::EmitWriteStorage128(&b, SsboDescriptor(inst.Arg(0)), arg(1), arg(2));
             return;
         case Opcode::WriteStorage32:
             _nir_build_store_ssbo(&b, arg(2), SsboDescriptor(inst.Arg(0)), WordOffset(inst.Arg(1)),
@@ -995,6 +1037,10 @@ private:
         case Opcode::BitCastU64F64:
         case Opcode::BitCastF64U64:
             Set(inst, arg(0));
+            return;
+        case Opcode::PackUint2x32:
+            RequireExtendedCompute();
+            Set(inst, Eden::Nir::EmitPackUint2x32(&b, arg(0)));
             return;
         case Opcode::PackFloat2x16:
             Set(inst, nir_pack_32_2x16(&b, arg(0)));
@@ -1257,6 +1303,10 @@ private:
         case Opcode::ShuffleDown:
         case Opcode::ShuffleButterfly:
             Set(inst, Shuffle(inst, arg(0)));
+            return;
+        case Opcode::ImageSampleExplicitLod:
+            RequireExtendedCompute();
+            Set(inst, ImageSampleExplicitLod(inst));
             return;
         case Opcode::ImageFetch:
             if (inst.HasAssociatedPseudoOperation()) {
