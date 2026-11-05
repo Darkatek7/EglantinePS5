@@ -1,4 +1,5 @@
 option(EDEN_MKW_DIAGNOSTICS "Enable Mario Kart development controls and capture instrumentation" OFF)
+option(EDEN_SCRIPTED_INPUT "Enable file-driven input for console qualification" OFF)
 option(EDEN_PS5_VULKAN "Build the native Vulkan renderer alongside OpenGL" OFF)
 set(EDEN_VULKAN_DRIVER "CUSTOM" CACHE STRING "Native Vulkan driver: CUSTOM or RADV")
 set_property(CACHE EDEN_VULKAN_DRIVER PROPERTY STRINGS CUSTOM RADV)
@@ -2658,7 +2659,8 @@ void Initialize() {
         "${eden_app_crt}" "${PORT_ROOT}/src/lifecycle.c" "${PORT_ROOT}/src/direct_memory.c"
         "${PORT_BUILD_DIR}/app_heap.c")
     target_compile_definitions(eden-headless PRIVATE PS5_NATIVE=1
-        $<$<BOOL:${EDEN_MKW_DIAGNOSTICS}>:EDEN_MKW_DIAGNOSTICS=1>)
+        $<$<BOOL:${EDEN_MKW_DIAGNOSTICS}>:EDEN_MKW_DIAGNOSTICS=1>
+        $<$<BOOL:${EDEN_SCRIPTED_INPUT}>:MKW_DIAGNOSTIC_INPUT=1>)
     set_property(TARGET eden-headless APPEND PROPERTY LINK_DEPENDS
         "${PORT_ROOT}/tools/link-headless-native.sh" "${PORT_ROOT}/tools/unwind.ld"
         "${PORT_ROOT}/tools/app-symbols.map")
