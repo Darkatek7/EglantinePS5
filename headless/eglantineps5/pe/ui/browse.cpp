@@ -452,7 +452,7 @@ void Launcher::draw_about(Canvas &c)
     list.rounded_rect({144.0f, 628.0f, 748.0f, 1.0f}, 0.0f, theme::kRule);
     text(c, tr("PS5 EDITION"), 144.0f, baseline(648.0f, 30.0f, theme::kSmall), theme::kSmall,
          theme::kLimePale, Align::left, 2.0f);
-    text_block(c, tr("EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."),
+    text_block(c, tr("EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."),
                144.0f, baseline(684.0f, 36.0f, theme::kText24), theme::kText24, 36.0f, theme::kBody,
                748.0f, 2, kShrink);
     text_shrink(c, tr("Menu sound effects made with ElevenLabs."), 144.0f,

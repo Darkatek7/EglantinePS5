@@ -586,7 +586,7 @@ Third-party components, authors and licenses are listed in
 
 ## License
 
-Copyright © 2026 AngelXex. Based on ProsperoEden, Copyright © 2026 BlackBearReloaded. Licensed under GPL-3.0-or-later; see [LICENSE](LICENSE). Third-party components keep their own licenses. Binary releases are built from the tagged source in this repository.
+Copyright © 2026 heydemoura. Based on ProsperoEden, Copyright © 2026 BlackBearReloaded. Licensed under GPL-3.0-or-later; see [LICENSE](LICENSE). Third-party components keep their own licenses. Binary releases are built from the tagged source in this repository.
 
 ## Disclaimer
 

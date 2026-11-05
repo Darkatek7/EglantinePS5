@@ -592,7 +592,7 @@ msgid "EglantinePS5 could not get access to the console's storage, so it cannot 
 msgstr ""
 
 #: pe/ui/browse.cpp
-msgid "EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."
+msgid "EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."
 msgstr ""
 
 #. Shown on the home screen after the app crashed and started again; {0} is a file.

@@ -592,8 +592,8 @@ msgid "EglantinePS5 could not get access to the console's storage, so it cannot 
 msgstr "EglantinePS5 無法存取主機的儲存空間，因此無法讀取你的設定、存檔和遊戲。沒有任何內容被變更。請關閉 EglantinePS5 後重新開啟。（代碼 {0}）"
 
 #: pe/ui/browse.cpp
-msgid "EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."
-msgstr "EglantinePS5 是由 AngelXex 帶來的非官方 PS5 移植版。"
+msgid "EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."
+msgstr "EglantinePS5 是由 heydemoura 帶來的非官方 PS5 移植版。"
 
 #. Shown on the home screen after the app crashed and started again; {0} is a file.
 #: eden_services.cpp, host/fake_services.cpp
