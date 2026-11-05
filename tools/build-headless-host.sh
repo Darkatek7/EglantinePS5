@@ -55,6 +55,7 @@ python3 -B "$root/headless/check_slab_lifetime.py" \
 cmake --build "$scratch/build" --target eden-headless eden-romfs-check eden-devices-check eden-scalar-check eden-memory-check eden-ryujinx-check eden-mods-check eden-shader-cache-check eden-settings-check eden-patch-library-check eden-update-check eden-update-files-check eden-profiles-check eden-save-sync-check -j "${EDEN_BUILD_JOBS:-$(nproc)}"
 python3 -B "$root/tools/check-sparse-header.py" "$scratch/build"
 python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/build"
+python3 -B "$root/tools/check-pipeline-cache.py"
 python3 -B "$root/tools/check-heap-growth.py"
 python3 -B "$root/tools/check-crash-report.py"
 python3 -B "$root/tools/check-stop-limit.py"

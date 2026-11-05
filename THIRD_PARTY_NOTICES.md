@@ -49,6 +49,10 @@ builds on the following projects, each under its own license.
 
 ## Graphics
 
+- **[ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden)**,
+  GPL-3.0-or-later. The shared pipeline-build wait implementation
+  (`headless/striped_wait.h`) and elevated-console disk-cache policy were
+  backported and adapted to this port's pinned core and Mesa build.
 - **[PS5 Mesa](https://github.com/mihawk-99/PS5_Mesa)** and
   **[PS5 Vulkan](https://github.com/mihawk-99/PS5_Vulkan)** by Mihawk. The
   RADV Vulkan driver (Mesa, mainly MIT) and its PS5 link recipe and platform

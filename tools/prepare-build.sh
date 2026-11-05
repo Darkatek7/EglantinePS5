@@ -70,6 +70,10 @@ if [[ -f $radv_release/lib/libvulkan_radeon.ps5.a ]]; then
         step "RADV: built from Mesa ${built:0:12}, pinned ${mesa_pin:0:12}"
         bash tools/build-radv-dependencies.sh
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
+    elif ! python3 -B tools/patch-radv-disk-cache.py --check "$radv_release/EDEN_DISK_CACHE_SHA256"; then
+        step "RADV: the elevated-app shader cache adaptation changed"
+        bash tools/build-radv-dependencies.sh
+        rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     elif ! python3 -B tools/patch-radv-wsi.py --check "$radv_release/EDEN_WSI_SHA256"; then
         step "RADV: the display code's adaptation changed"
         bash tools/build-radv-dependencies.sh
