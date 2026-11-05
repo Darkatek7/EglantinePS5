@@ -592,8 +592,8 @@ msgid "EglantinePS5 could not get access to the console's storage, so it cannot 
 msgstr "تعذّر على EglantinePS5 الوصول إلى وحدة تخزين الجهاز، لذا لا يمكنه قراءة إعداداتك وبياناتك المحفوظة وألعابك. لم يتغيّر شيء. أغلق EglantinePS5 وافتحه من جديد. (الرمز {0})"
 
 #: pe/ui/browse.cpp
-msgid "EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."
-msgstr "هذه نسخة غير رسمية من EglantinePS5 لجهاز PS5 يقدّمها لك AngelXex."
+msgid "EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."
+msgstr "هذه نسخة غير رسمية من EglantinePS5 لجهاز PS5 يقدّمها لك heydemoura."
 
 #. Shown on the home screen after the app crashed and started again; {0} is a file.
 #: eden_services.cpp, host/fake_services.cpp
