@@ -381,6 +381,7 @@ int main(int argc, char** argv) {
                     Eden::Report("cache", "The driver's shader cache could not move to the data folder; it starts empty");
                 (void)mkdir(cache.c_str(), 0777);
                 setenv("MESA_SHADER_CACHE_DIR", cache.c_str(), 1);
+                Eden::Report("cache", ("RADV shader cache: " + cache).c_str());
             }
         }
         // Whether Eden's large tables can be sparse on this console (src/memory_pages.cpp),
