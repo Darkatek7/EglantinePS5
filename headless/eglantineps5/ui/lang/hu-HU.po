@@ -592,8 +592,8 @@ msgid "EglantinePS5 could not get access to the console's storage, so it cannot 
 msgstr "Az EglantinePS5 nem fért hozzá a konzol tárhelyéhez, ezért nem tudja beolvasni a beállításaidat, a mentéseidet és a játékaidat. Semmi sem változott. Zárd be a EglantinePS5t, és nyisd meg újra. (Kód: {0})"
 
 #: pe/ui/browse.cpp
-msgid "EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."
-msgstr "Az EglantinePS5 egy nem hivatalos PS5-port a AngelXex jóvoltából."
+msgid "EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."
+msgstr "Az EglantinePS5 egy nem hivatalos PS5-port a heydemoura jóvoltából."
 
 #. Shown on the home screen after the app crashed and started again; {0} is a file.
 #: eden_services.cpp, host/fake_services.cpp

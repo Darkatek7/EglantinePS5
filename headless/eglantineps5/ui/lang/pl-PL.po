@@ -592,8 +592,8 @@ msgid "EglantinePS5 could not get access to the console's storage, so it cannot 
 msgstr "EglantinePS5 nie uzyskał dostępu do pamięci konsoli, więc nie może odczytać twoich ustawień, zapisów ani gier. Nic nie zostało zmienione. Zamknij EglantinePS5 i otwórz go ponownie. (Kod {0})"
 
 #: pe/ui/browse.cpp
-msgid "EglantinePS5 is an unofficial PS5 port brought to you by AngelXex."
-msgstr "EglantinePS5 to nieoficjalny port na PS5, który przygotował dla Ciebie AngelXex."
+msgid "EglantinePS5 is an unofficial PS5 port brought to you by heydemoura."
+msgstr "EglantinePS5 to nieoficjalny port na PS5, który przygotował dla Ciebie heydemoura."
 
 #. Shown on the home screen after the app crashed and started again; {0} is a file.
 #: eden_services.cpp, host/fake_services.cpp
