@@ -139,6 +139,27 @@ it does not enable the per-JIT-run diagnostic timer. Its packaged SELF SHA-256 i
 The console's FTP view returns a decoded ELF (verified SHA-256
 `759a68db74b1776aa1e2ba5de19881c6b01d31e0973e52eafa16533967b0db14`).
 
+## Integer flag follow-up
+
+The expanded-compute switch now also enables zero/sign flags for bitwise AND/OR/XOR and
+signed/unsigned bit-field extracts, plus zero/sign/carry/overflow for 32-bit addition.
+Definitions are attached to the associated IR pseudo-instructions without invalidating the
+IR: if a later instruction is unsupported, SPIR-V still receives an intact program.
+Unresolved or unsupported pseudo-operations continue to fall back.
+
+Carry tests unsigned wraparound; signed overflow tests whether both operands have a different
+sign from the sum. Patch 0016 fixes the matching negative-overflow boundary in the existing
+SPIR-V and GLSL emitters: `INT32_MIN + (-1)` must set overflow. The negative comparison must
+use `INT32_MIN - lhs`, rather than the positive branch's `INT32_MAX - lhs` limit.
+
+`python3 tools/check-nir-integer-flags.py` runs the production flag emitter against the pinned
+Mesa's real NIR constant-folding pass. It checks 30,424 cases against independent word and
+64-bit arithmetic expectations: boundary/random additions and bitwise operations, and every
+valid 32-bit bit-field offset/width for representative words. The checker uses the existing
+host RADV CLC build, or `MESA_HOST_BUILD`, without modifying that build. Console coverage and
+new-pipeline resource comparisons must be repeated after this follow-up; the table above
+records the earlier three-operation implementation, not the flag implementation.
+
 ## Reproduce
 
     # env.txt on the console, fresh shader cache

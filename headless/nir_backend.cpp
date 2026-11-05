@@ -38,6 +38,7 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_control_flow.h"
 #include "vk_shader_module.h"
+#include "nir_integer_flags.h"
 
 namespace {
 
@@ -785,6 +786,28 @@ private:
         return bits == 1 ? nir_imm_false(&b) : nir_imm_intN_t(&b, 0, bits);
     }
 
+    void IntegerResultFlags(IR::Inst& inst, nir_def* result, nir_def* lhs = nullptr,
+                            nir_def* rhs = nullptr) {
+        using IR::Opcode;
+        using Eden::Nir::IntegerFlag;
+        for (const auto& [opcode, flag] : {
+                 std::pair{Opcode::GetZeroFromOp, IntegerFlag::Zero},
+                 std::pair{Opcode::GetSignFromOp, IntegerFlag::Sign},
+                 std::pair{Opcode::GetCarryFromOp, IntegerFlag::Carry},
+                 std::pair{Opcode::GetOverflowFromOp, IntegerFlag::Overflow}}) {
+            if (IR::Inst* const pseudo{inst.GetAssociatedPseudoOperation(opcode)}) {
+                if (lhs == nullptr && (flag == IntegerFlag::Carry || flag == IntegerFlag::Overflow)) {
+                    Fail("unsupported integer flag");
+                }
+                Set(*pseudo, Eden::Nir::EmitIntegerFlag(&b, flag, result, lhs, rhs));
+            }
+        }
+        if (inst.GetAssociatedPseudoOperation(Opcode::GetSparseFromOp) ||
+            inst.GetAssociatedPseudoOperation(Opcode::GetInBoundsFromOp)) {
+            Fail("unsupported integer pseudo-operation");
+        }
+    }
+
     // Keep expanded coverage opt-in until the console A/B qualifies the new programs.
     void RequireExtendedCompute() const {
         static const bool enabled{[] {
@@ -810,9 +833,13 @@ private:
         case Opcode::Prologue:
         case Opcode::Epilogue:
             return;
+        case Opcode::GetZeroFromOp:
+        case Opcode::GetSignFromOp:
+        case Opcode::GetCarryFromOp:
+        case Opcode::GetOverflowFromOp:
         case Opcode::GetInBoundsFromOp:
             if (!defs.contains(&inst)) {
-                Fail("in-bounds flag");
+                Fail("unresolved pseudo-operation");
             }
             return;
         case Opcode::ConditionRef:
@@ -1103,12 +1130,15 @@ private:
             Fp(32);
             Set(inst, nir_i2f32(&b, arg(0)));
             return;
-        case Opcode::IAdd32:
-            if (inst.HasAssociatedPseudoOperation()) {
-                Fail("add flags");
-            }
-            Set(inst, nir_iadd(&b, arg(0), arg(1)));
+        case Opcode::IAdd32: {
+            if (inst.HasAssociatedPseudoOperation()) RequireExtendedCompute();
+            nir_def* const lhs{arg(0)};
+            nir_def* const rhs{arg(1)};
+            nir_def* const result{nir_iadd(&b, lhs, rhs)};
+            Set(inst, result);
+            IntegerResultFlags(inst, result, lhs, rhs);
             return;
+        }
         case Opcode::ISub32:
             Set(inst, nir_isub(&b, arg(0), arg(1)));
             return;
@@ -1135,9 +1165,7 @@ private:
         case Opcode::BitwiseXor32:
         case Opcode::BitFieldUExtract:
         case Opcode::BitFieldSExtract:
-            if (inst.HasAssociatedPseudoOperation()) {
-                Fail("bitwise flags");
-            }
+            if (inst.HasAssociatedPseudoOperation()) RequireExtendedCompute();
             switch (inst.GetOpcode()) {
             case Opcode::BitwiseAnd32:
                 Set(inst, nir_iand(&b, arg(0), arg(1)));
@@ -1155,6 +1183,7 @@ private:
                 Set(inst, nir_ibitfield_extract(&b, arg(0), arg(1), arg(2)));
                 break;
             }
+            IntegerResultFlags(inst, defs.at(&inst));
             return;
         case Opcode::BitwiseNot32:
             Set(inst, nir_inot(&b, arg(0)));
