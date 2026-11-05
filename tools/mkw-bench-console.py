@@ -203,7 +203,9 @@ class Bench(base.CacheConsole):
                         (self.current / (name + suffix)).write_bytes(data)
                 report = self.current / (name + '.txt')
                 if report.exists():
-                    reason = re.search(r'^reason: (.*)$', report.read_text(errors='replace'), re.M)
+                    text = report.read_text(errors='replace')
+                    # Errors the app reports carry 'reason:'; signals (SIGABRT, SIGSEGV) only 'what:'.
+                    reason = re.search(r'^reason: (.*)$', text, re.M) or re.search(r'^what: (.*)$', text, re.M)
                     crash['reason'] = reason[1] if reason else None
             self.log(f'{label}: crashed at {crash["seconds_after_launch"]} s: {crash.get("reason")}')
             self.screenshot('after-crash')
