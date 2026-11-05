@@ -9,7 +9,7 @@ SHELL := /bin/bash
 MAKEFLAGS += --no-print-directory
 
 # Parallel compile jobs.
-JOBS ?= $(shell nproc)
+JOBS ?= $(shell tools/build-jobs.sh)
 export EDEN_BUILD_JOBS := $(JOBS)
 # make dev: the title ID (16 hex digits) the development build boots.
 DEV_TITLE ?= $(shell cat .local/dev-profile-title 2>/dev/null)
