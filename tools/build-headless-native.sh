@@ -8,7 +8,7 @@ probe=OFF
 if [[ ${1:-} == --devices ]]; then devices=ON; fi
 if [[ ${1:-} == --graphics ]]; then graphics=ON; fi
 if [[ ${1:-} == --gpu-probe ]]; then graphics=ON; probe=ON; fi
-jobs=${EDEN_BUILD_JOBS:-$(nproc)}
+jobs=${EDEN_BUILD_JOBS:-$("$(dirname "${BASH_SOURCE[0]}")/build-jobs.sh")}
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid EDEN_BUILD_JOBS: $jobs" >&2; exit 1; }
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 command -v ninja >/dev/null
