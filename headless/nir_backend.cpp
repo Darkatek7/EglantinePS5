@@ -39,6 +39,7 @@
 #include "compiler/nir/nir_control_flow.h"
 #include "vk_shader_module.h"
 #include "nir_integer_ops.h"
+#include "nir_integer_flag_bindings.h"
 #include "nir_compute_ops.h"
 
 namespace {
@@ -821,24 +822,13 @@ private:
 
     void IntegerResultFlags(IR::Inst& inst, nir_def* result, nir_def* lhs = nullptr,
                             nir_def* rhs = nullptr) {
-        using IR::Opcode;
         using Eden::Nir::IntegerFlag;
-        for (const auto& [opcode, flag] : {
-                 std::pair{Opcode::GetZeroFromOp, IntegerFlag::Zero},
-                 std::pair{Opcode::GetSignFromOp, IntegerFlag::Sign},
-                 std::pair{Opcode::GetCarryFromOp, IntegerFlag::Carry},
-                 std::pair{Opcode::GetOverflowFromOp, IntegerFlag::Overflow}}) {
-            if (IR::Inst* const pseudo{inst.GetAssociatedPseudoOperation(opcode)}) {
-                if (lhs == nullptr && (flag == IntegerFlag::Carry || flag == IntegerFlag::Overflow)) {
-                    Fail("unsupported integer flag");
-                }
-                Set(*pseudo, Eden::Nir::EmitIntegerFlag(&b, flag, result, lhs, rhs));
+        Eden::Nir::VisitIntegerFlags(inst, [&](IR::Inst& pseudo, IntegerFlag flag) {
+            if (lhs == nullptr && (flag == IntegerFlag::Carry || flag == IntegerFlag::Overflow)) {
+                Fail("unsupported integer flag");
             }
-        }
-        if (inst.GetAssociatedPseudoOperation(Opcode::GetSparseFromOp) ||
-            inst.GetAssociatedPseudoOperation(Opcode::GetInBoundsFromOp)) {
-            Fail("unsupported integer pseudo-operation");
-        }
+            Set(pseudo, Eden::Nir::EmitIntegerFlag(&b, flag, result, lhs, rhs));
+        });
     }
 
     // Keep expanded coverage opt-in until the console A/B qualifies the new programs.

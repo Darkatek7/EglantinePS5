@@ -86,7 +86,8 @@ def main():
             # Keep the lease held by the experiment if its orchestrator exits.
             # subprocess.call kills its child when Ctrl-C interrupts wait(),
             # which can cut off the experiment's restoration/finally handler.
-            with subprocess.Popen(command, pass_fds=(lock.fileno(),)) as child:
+            with subprocess.Popen(command, pass_fds=(lock.fileno(),),
+                                  env={**os.environ, "EGLANTINE_CONSOLE_LEASE_HOST": args.host}) as child:
                 try:
                     return child.wait()
                 except KeyboardInterrupt:

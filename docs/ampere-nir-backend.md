@@ -189,6 +189,43 @@ boundaries, and checks twenty texture dimensionality/array/integer/offset combin
 the production NIR instruction builders. These structural checks do not replace console
 sampling validation; fresh-cache coverage, visual and resource comparisons follow this change.
 
+## Follow-up console qualification (2026-11-05)
+
+The first expanded console run exposed an IR-association bug before qualification: the integer
+flag visitor queried `GetSparseFromOp` after `GetZeroFromOp`, although zero, sparse and in-bounds
+share a union slot in `AssociatedInsts`. A valid zero flag could therefore be interpreted as an
+invalid sparse pseudo-operation and reject pipeline creation. The visitor now restricts integer
+producers to zero/sign/carry/overflow. A real-core regression covers 36 producer/flag
+combinations, visits every binding twice, and verifies that use counts and operands remain intact
+for SPIR-V fallback. Its negative control deliberately restores the old sparse query and requires
+the core to reject it with `Invalid pseudo-instruction`.
+
+After that fix, three matched, fresh-cache runs of the same Bananza cave scene produced:
+
+| Mode | NIR programs | SPIR-V programs | Pipeline failures |
+| --- | --- | --- | --- |
+| Existing NIR, expanded coverage off | 2 | 18 | 0 |
+| Expanded NIR | 5 | 15 | 0 |
+| NIR disabled | 0 | 20 | 0 |
+
+The three newly translated program hashes matched their forced-SPIR-V controls exactly for
+instructions, allocated VGPRs and LDS: 47/16/0, 100/32/0 and 103/32/0. The two existing HMMA
+programs also remained within the 0.5% instruction gate with identical VGPR/LDS allocation, so
+all five NIR programs passed the resource gate. No application restart occurred. At the end of
+the run, the harness byte-verified restoration of the original executable, settings and save,
+and restored the original shader caches.
+
+The remaining first blockers in this scene are `WriteStorage64` (2 programs), `LoadStorage128`
+(8), `FPUnordNotEqual32` (2), `SubgroupBallot` (1), `ShiftRightLogical64` (1) and `FPCos` (1).
+The expansion remains opt-in: this single functional qualification establishes additional NIR
+coverage and resource parity, but it is not a repeated performance or stutter benchmark.
+
+`tools/check-nir-console.py` automates the leased deployment, load-segment verification,
+fresh-cache runs, save/input replay, evidence capture and guarded restoration. Use
+`tools/analyze-nir-console.py` to deduplicate program hashes, report fallbacks and compare resource
+statistics. `EDEN_SCRIPTED_INPUT=ON` builds the input-enabled qualification twin without enabling
+the broader development diagnostics.
+
 ## Reproduce
 
     # env.txt on the console, fresh shader cache

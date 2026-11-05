@@ -53,6 +53,10 @@
 #include <unistd.h>
 
 /* The agent's port, the longest command it answers, and its own log. */
+#ifndef EDEN_PROBE_ROM
+#define EDEN_PROBE_ROM "/data/eglantineps5/roms/MarioKartWorld/exefs/main"
+#endif
+
 #define PS5VKCTL_PORT 9111
 #define PS5VKCTL_LINE 256
 #define PS5VKCTL_LOG "/data/eglantineps5/logs/mkw-driver-launch.log"
@@ -303,7 +307,7 @@ static int start_title(const char *title, const char **name, uint32_t *code, cha
         param.size = (uint32_t)sizeof(param);
         param.user_id = attempt->user_id;
         param.check_flag = attempt->check_flag;
-        const char *rom_args[] = {"--rom=/data/eglantineps5/roms/MarioKartWorld/exefs/main", NULL};
+        const char *rom_args[] = {"--rom=" EDEN_PROBE_ROM, NULL};
         *code = (uint32_t)attempt->call(title, strcmp(title, "PPSA98515") == 0 ? rom_args : NULL, &param);
         log_line("ps5vkctl: launch %s as %s user %d -> 0x%08x", title, attempt->name,
                  attempt->user_id, *code);
