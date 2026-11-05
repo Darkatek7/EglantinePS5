@@ -250,8 +250,16 @@ static void UpdateGrips(Core::System& system, Eden::Pad& pad) {
     }
 }
 
+#ifdef EDEN_PS5_RADV
+void EdenRegisterNirBackend(); // nir_backend.cpp
+#endif
+
 int main(int argc, char** argv) {
     try {
+#ifdef EDEN_PS5_RADV
+        // Compute shaders reach RADV as NIR where translatable (nir_handoff.h; EDEN_NX2_NIR=0: SPIR-V).
+        EdenRegisterNirBackend();
+#endif
         std::FILE* report = stdout;
         SCOPE_EXIT { if (report != stdout) std::fclose(report); };
         std::setvbuf(report, nullptr, _IONBF, 0);
