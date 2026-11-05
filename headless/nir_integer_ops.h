@@ -6,6 +6,11 @@
 
 namespace Eden::Nir {
 
+// SPIR-V GLSL.std.450 FindUMsb: a bit index, or all ones for zero input.
+inline nir_def* EmitFindUMsb32(nir_builder* b, nir_def* value) {
+    return nir_ufind_msb(b, value);
+}
+
 enum class IntegerFlag { Zero, Sign, Carry, Overflow };
 
 // All inputs/results are 32-bit words; flags are NIR booleans. Only called for requested flags.

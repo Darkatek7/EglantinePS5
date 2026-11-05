@@ -160,6 +160,15 @@ host RADV CLC build, or `MESA_HOST_BUILD`, without modifying that build. Console
 new-pipeline resource comparisons must be repeated after this follow-up; the table above
 records the earlier three-operation implementation, not the flag implementation.
 
+## FindUMsb32 follow-up
+
+`FindUMsb32` now translates to Mesa's `ufind_msb`, behind the same expanded-compute switch.
+It returns a zero-based unsigned bit index and `0xffffffff` for zero, matching SPIR-V
+`FindUMsb`. The host checker above also exercises the production helper against an independent
+bit-by-bit oracle for all 65,536 16-bit words, every 32-bit power of two and its neighbours,
+`UINT32_MAX`, and 4,096 deterministic random words (69,729 cases). Integer-flag regressions
+continue to run alongside it. Console qualification follows the remaining operation work.
+
 ## Reproduce
 
     # env.txt on the console, fresh shader cache

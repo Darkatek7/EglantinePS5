@@ -8,7 +8,7 @@
 #include <limits>
 #include <random>
 
-#include "nir_integer_flags.h"
+#include "nir_integer_ops.h"
 
 static unsigned cases;
 
@@ -69,6 +69,30 @@ static void Check(uint32_t lhs, uint32_t rhs, unsigned operation = 0, unsigned o
     ralloc_free(b.shader);
 }
 
+static unsigned find_cases;
+
+static void CheckFind(uint32_t value) {
+    static const nir_shader_compiler_options options{};
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, &options, "find_umsb32");
+    nir_def* result = Eden::Nir::EmitFindUMsb32(&b, nir_imm_int(&b, value));
+    if (result->num_components != 1 || result->bit_size != 32) std::abort();
+    nir_intrinsic_instr* store = _nir_build_store_ssbo(
+        &b, result, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+        _nir_store_ssbo_indices{0, 1, static_cast<gl_access_qualifier>(0), 4, 0, 0});
+    while (nir_opt_constant_folding(b.shader)) {}
+    uint32_t expected = UINT32_MAX;
+    // Independent reference: walk the word, retaining the last set-bit position.
+    for (unsigned bit = 0; bit < 32; ++bit) {
+        if ((value & (uint32_t(1) << bit)) != 0) expected = bit;
+    }
+    if (!nir_src_is_const(store->src[0]) || nir_src_as_uint(store->src[0]) != expected) {
+        std::fprintf(stderr, "FindUMsb32 mismatch for %08x\n", value);
+        std::abort();
+    }
+    ++find_cases;
+    ralloc_free(b.shader);
+}
+
 int main() {
     glsl_type_singleton_init_or_ref();
     constexpr std::array<uint32_t, 12> edges{0, 1, 2, 0x7ffffffe, 0x7fffffff, 0x80000000,
@@ -89,6 +113,16 @@ int main() {
     for (unsigned i = 0; i < 4096; ++i) {
         for (unsigned op = 0; op < 4; ++op) Check(random(), random(), op);
     }
+    for (uint32_t value = 0; value <= UINT16_MAX; ++value) CheckFind(value);
+    for (unsigned bit = 0; bit < 32; ++bit) {
+        const uint32_t power = uint32_t(1) << bit;
+        CheckFind(power);
+        CheckFind(power - 1);
+        CheckFind(power + 1);
+    }
+    CheckFind(UINT32_MAX);
+    for (unsigned i = 0; i < 4096; ++i) CheckFind(random());
     glsl_type_singleton_decref();
+    std::printf("NIR FindUMsb32: %u real Mesa folding cases PASS\n", find_cases);
     std::printf("NIR integer flags: %u cases, real Mesa folding, zero/sign/carry/overflow PASS\n", cases);
 }

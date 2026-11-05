@@ -38,7 +38,7 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_control_flow.h"
 #include "vk_shader_module.h"
-#include "nir_integer_flags.h"
+#include "nir_integer_ops.h"
 
 namespace {
 
@@ -1187,6 +1187,10 @@ private:
             return;
         case Opcode::BitwiseNot32:
             Set(inst, nir_inot(&b, arg(0)));
+            return;
+        case Opcode::FindUMsb32:
+            RequireExtendedCompute();
+            Set(inst, Eden::Nir::EmitFindUMsb32(&b, arg(0)));
             return;
         case Opcode::SMin32:
             Set(inst, nir_imin(&b, arg(0), arg(1)));
