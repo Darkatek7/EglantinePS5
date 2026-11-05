@@ -19,6 +19,7 @@
 #include "dynarmic/interface/exclusive_monitor.h"
 #include "common/host_memory.h"
 #include "common/sparse_large_vector.h"
+#include "common/page_table.h"
 #include "../src/fastmem.h"
 #include <csignal>
 #include <sys/wait.h>
@@ -28,6 +29,10 @@ void SparseUsage(std::size_t* reserved, std::size_t* committed) noexcept;
 #define EDEN_JIT_LIST_FORMAT_ONLY
 #include "jit_list.h"
 #include <unistd.h>
+
+// The JIT's native-sample hook (headless/mkw_native_sample.inc) lives in the app; the check
+// links the same dynarmic without it.
+extern "C" __attribute__((weak)) void mkw_native_block(unsigned long long, const void*, unsigned long long) {}
 
 static void require(bool value, std::source_location at = std::source_location::current()) {
     if (!value) { std::fprintf(stderr, "Memory check failed at line %u\n", at.line()); std::abort(); }
@@ -1356,7 +1361,93 @@ static void CheckSparseTables() {
               "six threads on shared slots, an unmap that touches only what was written");
 }
 
+// The JIT's direct page table (headless/jit-page-table.cmake). Every PageEntryData write keeps a
+// page's direct value equal to the entry's pointer, 0 when marked or empty; a first write in an
+// untouched part of the table commits the mirror too (the mirror store would fault otherwise);
+// an A64 JIT given the direct table loads and stores through it and calls back for a page that
+// is marked, cleared or out of range.
+static void CheckDirectPageTable(uint8_t* backing) {
+    using Common::PageType;
+    Common::PageTable table;
+    table.Resize(39, 12);
+    require(Common::PageTable::DirectTables() && table.DirectTable() != nullptr);
+    const auto* direct = static_cast<const volatile uint64_t*>(table.DirectTable());
+    const std::size_t mirror = table.entries.mirror_index;
+    unsigned cases = 0;
+    const uint64_t near = 0x100000, far = (uint64_t{1} << 38) + 0x5000;
+    const auto pointer = [&](uint64_t vaddr) { return reinterpret_cast<uintptr_t>(backing) - vaddr; };
+    for (uint64_t vaddr : {near, far}) {
+        const std::size_t page = vaddr >> 12;
+        table.entries.CommitRegion(page, page + 1);
+        auto& entry = table.entries.GetUnchecked(page);
+        entry.Store(false, PageType::Memory, 5, pointer(vaddr));
+        require(entry.Pointer() == pointer(vaddr) && direct[page] == pointer(vaddr));
+        entry.MarkRasterizerCached();
+        require(entry.Pointer() == 0 && direct[page] == 0);
+        entry.Store(false, PageType::Memory, 5, entry.Pointer(true));
+        require(direct[page] == pointer(vaddr));
+        entry.MarkDebug(pointer(vaddr), 5);
+        require(direct[page] == 0);
+        entry.Store(false, PageType::Unmapped, 5, 0);
+        require(direct[page] == 0 && direct[page - 1] == 0 && direct[page + 1] == 0);
+        entry.Store(false, PageType::Memory, 5, pointer(vaddr));
+        cases += 5;
+    }
+    // An unmap (core/memory.cpp) zeroes the direct values, then the entries.
+    table.entries.ZeroRegion((near >> 12) + mirror, (near >> 12) + 1 + mirror);
+    table.entries.ZeroRegion(near >> 12, (near >> 12) + 1);
+    require(direct[near >> 12] == 0 && table.entries[near >> 12].Pointer() == 0 && direct[far >> 12] == pointer(far));
+    table.entries.GetUnchecked(near >> 12).Store(false, PageType::Memory, 5, pointer(near));
+    ++cases;
+
+    Memory<false> memory;
+    A64::UserConfig config{};
+    config.callbacks = &memory;
+    config.enable_cycle_counting = false;
+    config.code_cache_size = 16 * 1024 * 1024;
+    config.page_table = static_cast<void**>(table.DirectTable());
+    config.page_table_address_space_bits = 39;
+    config.silently_mirror_page_table = false;
+    config.absolute_offset_page_table = true;
+    config.detect_misaligned_access_via_page_table = 16 | 32 | 64 | 128;
+    config.only_detect_misalignment_via_page_table_on_page_boundary = true;
+    A64::Jit jit{config};
+    memory.jit = &jit;
+    const auto run = [&](bool write, uint64_t vaddr) {
+        memory.instruction = write ? 0xf9000001u : 0xf9400001u; // str/ldr x1, [x0]
+        memory.address = vaddr;
+        memory.reads = memory.writes = 0;
+        jit.Reset(); jit.ClearHalt(~HaltReason{}); jit.ClearCache();
+        jit.SetPC(0x1000); jit.SetRegister(0, vaddr); jit.SetRegister(1, write ? memory.value[0] : 0);
+        require(jit.Run() == HaltReason::UserDefined1);
+        ++cases;
+        return jit.GetRegister(1);
+    };
+    for (uint64_t vaddr : {near, far}) {
+        auto& entry = table.entries.GetUnchecked(vaddr >> 12);
+        const uint64_t stored = 0x0123456789abcdefULL ^ vaddr;
+        std::memcpy(backing, &stored, 8);
+        require(run(false, vaddr) == stored && memory.reads == 0);
+        std::memset(backing, 0, 8);
+        run(true, vaddr);
+        require(memory.writes == 0 && std::memcmp(backing, &memory.value[0], 8) == 0);
+        entry.MarkRasterizerCached();
+        require(run(false, vaddr) == memory.value[0] && memory.reads == 1);
+        run(true, vaddr);
+        require(memory.writes == 1);
+        entry.Store(false, PageType::Memory, 5, entry.Pointer(true));
+        std::memcpy(backing, &stored, 8);
+        require(run(false, vaddr) == stored && memory.reads == 0);
+    }
+    require(run(false, uint64_t{1} << 39) == memory.value[0] && memory.reads == 1); // out of range
+    require(run(false, 0x200000) == memory.value[0] && memory.reads == 1);          // never mapped
+    std::memset(backing, 0, 8);
+    std::printf("Direct page table PASS: %u cases\n", cases);
+}
+
 int main(int argc, char** argv) {
+    // The direct page table is opt-in on the console; the checks run with it.
+    setenv("EDEN_JIT_TABLE", "1", 1);
     CheckSparseTables();
     if (argc == 2 && std::strcmp(argv[1], "--link-check") == 0) {
         CheckLinks();
@@ -1417,6 +1508,7 @@ int main(int argc, char** argv) {
     CheckPressure(backing, false);
     CheckSimdPressure(backing);
     std::printf("Page-table exclusives PASS: %u cases\n", CheckTableExclusives(backing));
+    CheckDirectPageTable(backing);
     CheckAtomicLoop(backing, false);
     CheckAtomicLoopA32(backing, false);
     CheckSharedJit(2, true, 2, true);
