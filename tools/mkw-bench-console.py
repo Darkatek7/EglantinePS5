@@ -211,10 +211,12 @@ class Bench(base.CacheConsole):
             self.screenshot('after-crash')
             self.stop()
         else:
+            # Copy the game's logs now: returning to the launcher starts a new process that
+            # rewrites them.
+            self.collect()
             self.screenshot('end')
             self.pulse(mask=0x100000 | 0x400, duration=500)
             time.sleep(12)
-            self.collect()
             self.stop()
         result = analyze(self.current, self.args.warmup_frames)
         result.update(label=label, candidate=candidate['label'], variant=variant['label'],
