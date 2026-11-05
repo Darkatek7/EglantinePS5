@@ -785,6 +785,17 @@ private:
         return bits == 1 ? nir_imm_false(&b) : nir_imm_intN_t(&b, 0, bits);
     }
 
+    // Keep expanded coverage opt-in until the console A/B qualifies the new programs.
+    void RequireExtendedCompute() const {
+        static const bool enabled{[] {
+            const char* const value{std::getenv("EDEN_NX2_NIR_EXTENDED_COMPUTE")};
+            return value != nullptr && value[0] == '1' && value[1] == '\0';
+        }()};
+        if (!enabled) {
+            Fail("extended compute coverage disabled");
+        }
+    }
+
     void EmitInst(IR::Inst& inst) {
         const auto arg{[&](size_t i) { return Def(inst.Arg(i)); }};
         IntOp();
@@ -840,6 +851,35 @@ private:
             Set(inst, value);
             return;
         }
+        case Opcode::GetCbufU32x2: {
+            RequireExtendedCompute();
+            // The SPIR-V alias is an array of uvec2: discard all three low address bits.
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector constant buffer without descriptor aliasing");
+            }
+            nir_def* const offset{nir_iand_imm(&b, Def(inst.Arg(1)), ~7U)};
+            nir_def* value{_nir_build_load_ubo(
+                &b, 2, 32, CbufDescriptor(inst.Arg(0)), offset,
+                _nir_load_ubo_indices{0, ACCESS_NON_WRITEABLE, 8, 0,
+                                      inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~7U) : 0U,
+                                      inst.Arg(1).IsImmediate() ? 8U : 65536U})};
+            if (!inst.Arg(1).IsImmediate() && profile.has_broken_robust) {
+                value = nir_bcsel(&b, nir_ult_imm(&b, nir_ushr_imm(&b, offset, 3), 0x10000), value,
+                                  nir_imm_ivec2(&b, 0, 0));
+            }
+            Set(inst, value);
+            return;
+        }
+        case Opcode::LoadStorage64:
+            RequireExtendedCompute();
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector storage buffer without descriptor aliasing");
+            }
+            // LoadStorage64 returns two u32 lanes, not a scalar u64.
+            Set(inst, _nir_build_load_ssbo(&b, 2, 32, SsboDescriptor(inst.Arg(0)),
+                                           nir_iand_imm(&b, Def(inst.Arg(1)), ~7U),
+                                           _nir_load_ssbo_indices{0, kNoAccess, 8, 0, 0}));
+            return;
         case Opcode::LoadStorage32:
             Set(inst, _nir_build_load_ssbo(&b, 1, 32, SsboDescriptor(inst.Arg(0)),
                                            WordOffset(inst.Arg(1)),
@@ -994,6 +1034,12 @@ private:
         case Opcode::FPTrunc32:
             Fp(32);
             Set(inst, nir_ftrunc(&b, arg(0)));
+            return;
+        case Opcode::FPRecip32:
+            RequireExtendedCompute();
+            Fp(32);
+            // Match SPIR-V OpFDiv(1.0, value), including the shader's float controls.
+            Set(inst, nir_fdiv(&b, nir_imm_float(&b, 1.0f), arg(0)));
             return;
         case Opcode::FPExp2:
             Fp(32);
