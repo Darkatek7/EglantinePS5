@@ -39,7 +39,7 @@ Gameplay renders as with SPIR-V (console screenshots), no crash.
 
 The other 19 compute programs of that measured run took SPIR-V: `GetCbufU32x2` (14),
 `FPRecip32` (4) and `LoadStorage64` (1). The opt-in expansion below implements these operations;
-the 2/21 baseline above is still the last console-qualified coverage measurement.
+the 2/21 baseline above describes the earlier reference run, not a coverage gain from this expansion.
 
 ## Expanded compute coverage (qualification pending)
 
@@ -64,7 +64,7 @@ Local validation (2026-11-05, based on `a946e34`): release build and mandatory p
 checks passed, including the focused core suite (179 cases, 2,239,931 assertions).
 Candidate `eboot.bin` SHA-256:
 `be0a842a0b16ed54d4d490b26750ce16916ba9cb31caba3023323d590f3e181e`.
-This candidate has not been deployed or console-qualified.
+This hash identifies the uninstrumented release; the console runs below use an input-enabled twin.
 
 Qualification procedure, on the same candidate build and the same save/scene:
 
@@ -76,6 +76,68 @@ Qualification procedure, on the same candidate build and the same save/scene:
    hashes, not log lines, for coverage and total compile-time comparisons.
 3. Repeat with MKW to identify its next unsupported compute operations. Do not enable
    expanded coverage by default until the console evidence meets these gates.
+
+## Console result for expanded coverage (2026-11-05)
+
+**Verdict: no coverage increase yet; keep the expansion opt-in.** Implementing the first
+reported unsupported operation was not sufficient: the translator stops at the first blocker,
+so later unsupported operations in the same program were hidden by the original fallback.
+
+Three fresh-cache runs of commit `709f97f`, using the same input-enabled release twin and a
+restored copy of the same Bananza "Meet up with others" save, compiled identical sets of
+20 compute program hashes in Ingot Isle Cave-In:
+
+| Mode | NIR programs | SPIR-V programs |
+| --- | --- | --- |
+| Existing NIR, extended coverage off | 2 | 18 |
+| NIR with extended coverage on | 2 | 18 |
+| NIR disabled | 0 | 20 |
+
+This scene exercised 20 programs, rather than the 21 of the earlier reference run. No
+program changed backend between the existing and expanded NIR modes. The expanded run's
+next blockers, counted once per unique program hash, were:
+
+| Next blocker | Programs |
+| --- | --- |
+| Bitwise-operation flags | 8 |
+| Integer-add flags | 3 |
+| `FindUMsb32` | 3 |
+| `WriteStorage128` | 1 |
+| `ImageSampleExplicitLod` | 1 |
+| `PackUint2x32` | 1 |
+| `GetCbufF32` | 1 |
+
+No new application crash was observed; the crash index stayed unchanged and the kernel log
+contained no panic, fatal fault or device-lost report during these runs. Expanded-NIR and
+SPIR-V screenshots show the same cave geometry, textures and lighting; they are visual
+comparisons, not pixel-identical captures (animation and HUD timing differ). Video capture
+was intermittent, and the full baseline run has log evidence but no successful gameplay
+screenshot. An initial baseline run stopped before full scene coverage is excluded here.
+
+The two existing NIR HMMA programs still match the driver-resource acceptance criteria:
+
+| Metric | Shader 1, SPIR-V / NIR | Shader 2, SPIR-V / NIR |
+| --- | --- | --- |
+| Instructions | 26,106 / 26,136 (+0.115%) | 19,418 / 19,426 (+0.041%) |
+| Allocated VGPRs | 128 / 128 | 128 / 128 |
+| LDS bytes | 12,288 / 12,288 | 10,240 / 10,240 |
+
+These checks qualify the existing HMMA path in this scene. They **do not** qualify the new
+operations as executable NIR: programs using them still fell back before pipeline creation.
+There is no demonstrated compile-time or FPS gain attributable to expanded coverage.
+The runs were single observations, not S0's repeated benchmark or a stutter qualification.
+
+Next implementation step: handle the integer add/bitwise flags correctly, then `FindUMsb32`
+and the remaining operation gaps above. Repeat this comparison after at least one affected
+program reaches NIR pipeline creation; retain the SPIR-V fallback throughout.
+
+Evidence is local under `.local/nir-console/1793864606383304193/`: per-run environment files,
+boot/application/frame logs, kernel log, screenshots, program-hash analysis and restoration
+receipt. The input twin only adds `MKW_DIAGNOSTIC_INPUT` to the release source temporarily;
+it does not enable the per-JIT-run diagnostic timer. Its packaged SELF SHA-256 is
+`b6d9aa2f17deb43ca615356f2094205fafcabf7096d4ea243b2b735fe18fa9b4`.
+The console's FTP view returns a decoded ELF (verified SHA-256
+`759a68db74b1776aa1e2ba5de19881c6b01d31e0973e52eafa16533967b0db14`).
 
 ## Reproduce
 
