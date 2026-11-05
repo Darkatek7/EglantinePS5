@@ -3,7 +3,7 @@ Pipeline build waits and shader-cache backport — 2026-11-05
 Implemented locally; nothing published. Console installation restored after testing.
 
 Changes
-- Backported ProsperoEden's headless/striped_wait.h. Vulkan graphics/compute
+- headless/striped_wait.h bounds Vulkan build synchronization. Graphics/compute
   pipelines share 64 build-wait slots instead of retaining a separate thread-library
   mutex/condition pair for every cached pipeline. Each waiter keeps its own built
   predicate; a shared condition broadcasts so another pipeline cannot consume the
@@ -11,14 +11,14 @@ Changes
 - headless/pipeline_wait.cmake generates the two checked header overrides and puts
   them ahead of the upstream headers for video_core. Changed upstream anchors fail
   configuration. The emulator submodule and its existing local patches are untouched.
-- tools/patch-radv-disk-cache.py adapts ProsperoEden's elevation fix to the pinned
-  Mesa build export. The identity mismatch exception applies only to __PROSPERO__
+- tools/patch-radv-disk-cache.py adapts the identity guard in the pinned
+  Mesa build export for console elevation. The identity mismatch exception applies only to __PROSPERO__
   with MESA_SHADER_CACHE_DIR=/data/eglantineps5/cache/radv. Desktop identity policy,
   explicit cache-disable options and unrelated cache paths retain their behavior.
 - Driver preparation applies the patch, records its fingerprint and rebuilds and
   re-isolates a stale driver. Startup logs name the selected RADV cache directory.
-- The existing shader_cache_reader.inc already matches ProsperoEden's recovery
-  implementation except for the application name. It was retained. The emulator
+- The existing shader_cache_reader.inc already implements truncated-cache
+  recovery and was retained. The emulator
   core also already writes its Vulkan pipeline blob using temporary-file/rename
   replacement; this task did not replace that writer.
 - Added host concurrency/cache-policy checks and a reversible console test runner.
@@ -115,6 +115,5 @@ Repeat the console sequence using the retained candidate and launcher:
 The runner acquires the shared console lease automatically, verifies uploaded
 PT_LOAD segments against the matching packaged ELF, preserves originals, and
 restores them in its finally block. Use a new output directory for each run.
-Source attribution: ProsperoEden's GPL-3.0-or-later pipeline-wait implementation
-and elevated-console cache policy, adapted to EglantinePS5's existing pinned core
-and Mesa integration. No new emulator or graphics-driver revision was imported.
+License provenance is recorded in THIRD_PARTY_NOTICES.md. No new emulator
+or graphics-driver revision was imported.
