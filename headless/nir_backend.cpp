@@ -38,6 +38,9 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_control_flow.h"
 #include "vk_shader_module.h"
+#include "nir_integer_ops.h"
+#include "nir_integer_flag_bindings.h"
+#include "nir_compute_ops.h"
 
 namespace {
 
@@ -750,6 +753,38 @@ private:
         return &tex->def;
     }
 
+    nir_def* ImageSampleExplicitLod(IR::Inst& inst) {
+        const auto tex_info{inst.Flags<IR::TextureInstInfo>()};
+        const u32 descriptor{tex_info.descriptor_index.Value()};
+        if (inst.HasAssociatedPseudoOperation() || tex_info.is_depth != 0 ||
+            descriptor >= texture_vars.size() || texture_vars[descriptor] == nullptr) {
+            Fail("unsupported explicit LOD sample");
+        }
+        const TextureDescriptor& desc{info.texture_descriptors[descriptor]};
+        const TextureType type{tex_info.type.Value()};
+        if (desc.type != type) Fail("sample texture type");
+        const Dimension dim{DimensionOf(type)};
+        nir_def* const coords{Def(inst.Arg(1))};
+        nir_def* const lod{Def(inst.Arg(2))};
+        if (coords->num_components != dim.coords || lod->num_components != 1) {
+            Fail("sample coordinates or LOD");
+        }
+        nir_def* offset{};
+        if (!inst.Arg(3).IsEmpty()) {
+            const IR::Value value{inst.Arg(3).Resolve()};
+            if (!value.IsImmediate() && !value.InstRecursive()->AreAllArgsImmediates()) {
+                Fail("dynamic sample offset");
+            }
+            offset = Def(inst.Arg(3));
+            if (offset->num_components != dim.coords - unsigned(dim.array)) {
+                Fail("sample offset shape");
+            }
+        }
+        return &Eden::Nir::EmitSampleExplicitLod(&b, texture_vars[descriptor], dim.dim,
+                                                dim.array, desc.is_integer, coords, lod,
+                                                offset)->def;
+    }
+
     void ImageWrite(IR::Inst& inst) {
         const auto tex_info{inst.Flags<IR::TextureInstInfo>()};
         const TextureType type{tex_info.type.Value()};
@@ -785,6 +820,28 @@ private:
         return bits == 1 ? nir_imm_false(&b) : nir_imm_intN_t(&b, 0, bits);
     }
 
+    void IntegerResultFlags(IR::Inst& inst, nir_def* result, nir_def* lhs = nullptr,
+                            nir_def* rhs = nullptr) {
+        using Eden::Nir::IntegerFlag;
+        Eden::Nir::VisitIntegerFlags(inst, [&](IR::Inst& pseudo, IntegerFlag flag) {
+            if (lhs == nullptr && (flag == IntegerFlag::Carry || flag == IntegerFlag::Overflow)) {
+                Fail("unsupported integer flag");
+            }
+            Set(pseudo, Eden::Nir::EmitIntegerFlag(&b, flag, result, lhs, rhs));
+        });
+    }
+
+    // Keep expanded coverage opt-in until the console A/B qualifies the new programs.
+    void RequireExtendedCompute() const {
+        static const bool enabled{[] {
+            const char* const value{std::getenv("EDEN_NX2_NIR_EXTENDED_COMPUTE")};
+            return value != nullptr && value[0] == '1' && value[1] == '\0';
+        }()};
+        if (!enabled) {
+            Fail("extended compute coverage disabled");
+        }
+    }
+
     void EmitInst(IR::Inst& inst) {
         const auto arg{[&](size_t i) { return Def(inst.Arg(i)); }};
         IntOp();
@@ -799,9 +856,13 @@ private:
         case Opcode::Prologue:
         case Opcode::Epilogue:
             return;
+        case Opcode::GetZeroFromOp:
+        case Opcode::GetSignFromOp:
+        case Opcode::GetCarryFromOp:
+        case Opcode::GetOverflowFromOp:
         case Opcode::GetInBoundsFromOp:
             if (!defs.contains(&inst)) {
-                Fail("in-bounds flag");
+                Fail("unresolved pseudo-operation");
             }
             return;
         case Opcode::ConditionRef:
@@ -826,13 +887,15 @@ private:
         case Opcode::UndefU32:
             Set(inst, Undef(32));
             return;
+        case Opcode::GetCbufF32:
+            RequireExtendedCompute();
+            [[fallthrough]];
         case Opcode::GetCbufU32: {
             nir_def* const offset{WordOffset(inst.Arg(1))};
-            nir_def* value{_nir_build_load_ubo(
-                &b, 1, 32, CbufDescriptor(inst.Arg(0)), offset,
-                _nir_load_ubo_indices{0, ACCESS_NON_WRITEABLE, 4, 0,
-                                      inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~3U) : 0U,
-                                      inst.Arg(1).IsImmediate() ? 4U : 65536U})};
+            nir_def* value{Eden::Nir::EmitCbufWord(
+                &b, CbufDescriptor(inst.Arg(0)), offset,
+                inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~3U) : 0U,
+                inst.Arg(1).IsImmediate() ? 4U : 65536U)};
             if (!inst.Arg(1).IsImmediate() && profile.has_broken_robust) {
                 value = nir_bcsel(&b, nir_ult_imm(&b, nir_ushr_imm(&b, offset, 2), 0x10000), value,
                                   nir_imm_int(&b, 0));
@@ -840,10 +903,46 @@ private:
             Set(inst, value);
             return;
         }
+        case Opcode::GetCbufU32x2: {
+            RequireExtendedCompute();
+            // The SPIR-V alias is an array of uvec2: discard all three low address bits.
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector constant buffer without descriptor aliasing");
+            }
+            nir_def* const offset{nir_iand_imm(&b, Def(inst.Arg(1)), ~7U)};
+            nir_def* value{_nir_build_load_ubo(
+                &b, 2, 32, CbufDescriptor(inst.Arg(0)), offset,
+                _nir_load_ubo_indices{0, ACCESS_NON_WRITEABLE, 8, 0,
+                                      inst.Arg(1).IsImmediate() ? (inst.Arg(1).U32() & ~7U) : 0U,
+                                      inst.Arg(1).IsImmediate() ? 8U : 65536U})};
+            if (!inst.Arg(1).IsImmediate() && profile.has_broken_robust) {
+                value = nir_bcsel(&b, nir_ult_imm(&b, nir_ushr_imm(&b, offset, 3), 0x10000), value,
+                                  nir_imm_ivec2(&b, 0, 0));
+            }
+            Set(inst, value);
+            return;
+        }
+        case Opcode::LoadStorage64:
+            RequireExtendedCompute();
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector storage buffer without descriptor aliasing");
+            }
+            // LoadStorage64 returns two u32 lanes, not a scalar u64.
+            Set(inst, _nir_build_load_ssbo(&b, 2, 32, SsboDescriptor(inst.Arg(0)),
+                                           nir_iand_imm(&b, Def(inst.Arg(1)), ~7U),
+                                           _nir_load_ssbo_indices{0, kNoAccess, 8, 0, 0}));
+            return;
         case Opcode::LoadStorage32:
             Set(inst, _nir_build_load_ssbo(&b, 1, 32, SsboDescriptor(inst.Arg(0)),
                                            WordOffset(inst.Arg(1)),
                                            _nir_load_ssbo_indices{0, kNoAccess, 4, 0, 0}));
+            return;
+        case Opcode::WriteStorage128:
+            RequireExtendedCompute();
+            if (!profile.support_descriptor_aliasing) {
+                Fail("vector storage buffer without descriptor aliasing");
+            }
+            Eden::Nir::EmitWriteStorage128(&b, SsboDescriptor(inst.Arg(0)), arg(1), arg(2));
             return;
         case Opcode::WriteStorage32:
             _nir_build_store_ssbo(&b, arg(2), SsboDescriptor(inst.Arg(0)), WordOffset(inst.Arg(1)),
@@ -929,6 +1028,10 @@ private:
         case Opcode::BitCastF64U64:
             Set(inst, arg(0));
             return;
+        case Opcode::PackUint2x32:
+            RequireExtendedCompute();
+            Set(inst, Eden::Nir::EmitPackUint2x32(&b, arg(0)));
+            return;
         case Opcode::PackFloat2x16:
             Set(inst, nir_pack_32_2x16(&b, arg(0)));
             return;
@@ -995,6 +1098,12 @@ private:
             Fp(32);
             Set(inst, nir_ftrunc(&b, arg(0)));
             return;
+        case Opcode::FPRecip32:
+            RequireExtendedCompute();
+            Fp(32);
+            // Match SPIR-V OpFDiv(1.0, value), including the shader's float controls.
+            Set(inst, nir_fdiv(&b, nir_imm_float(&b, 1.0f), arg(0)));
+            return;
         case Opcode::FPExp2:
             Fp(32);
             Set(inst, nir_fexp2(&b, arg(0)));
@@ -1057,12 +1166,15 @@ private:
             Fp(32);
             Set(inst, nir_i2f32(&b, arg(0)));
             return;
-        case Opcode::IAdd32:
-            if (inst.HasAssociatedPseudoOperation()) {
-                Fail("add flags");
-            }
-            Set(inst, nir_iadd(&b, arg(0), arg(1)));
+        case Opcode::IAdd32: {
+            if (inst.HasAssociatedPseudoOperation()) RequireExtendedCompute();
+            nir_def* const lhs{arg(0)};
+            nir_def* const rhs{arg(1)};
+            nir_def* const result{nir_iadd(&b, lhs, rhs)};
+            Set(inst, result);
+            IntegerResultFlags(inst, result, lhs, rhs);
             return;
+        }
         case Opcode::ISub32:
             Set(inst, nir_isub(&b, arg(0), arg(1)));
             return;
@@ -1089,9 +1201,7 @@ private:
         case Opcode::BitwiseXor32:
         case Opcode::BitFieldUExtract:
         case Opcode::BitFieldSExtract:
-            if (inst.HasAssociatedPseudoOperation()) {
-                Fail("bitwise flags");
-            }
+            if (inst.HasAssociatedPseudoOperation()) RequireExtendedCompute();
             switch (inst.GetOpcode()) {
             case Opcode::BitwiseAnd32:
                 Set(inst, nir_iand(&b, arg(0), arg(1)));
@@ -1109,9 +1219,14 @@ private:
                 Set(inst, nir_ibitfield_extract(&b, arg(0), arg(1), arg(2)));
                 break;
             }
+            IntegerResultFlags(inst, defs.at(&inst));
             return;
         case Opcode::BitwiseNot32:
             Set(inst, nir_inot(&b, arg(0)));
+            return;
+        case Opcode::FindUMsb32:
+            RequireExtendedCompute();
+            Set(inst, Eden::Nir::EmitFindUMsb32(&b, arg(0)));
             return;
         case Opcode::SMin32:
             Set(inst, nir_imin(&b, arg(0), arg(1)));
@@ -1178,6 +1293,10 @@ private:
         case Opcode::ShuffleDown:
         case Opcode::ShuffleButterfly:
             Set(inst, Shuffle(inst, arg(0)));
+            return;
+        case Opcode::ImageSampleExplicitLod:
+            RequireExtendedCompute();
+            Set(inst, ImageSampleExplicitLod(inst));
             return;
         case Opcode::ImageFetch:
             if (inst.HasAssociatedPseudoOperation()) {
