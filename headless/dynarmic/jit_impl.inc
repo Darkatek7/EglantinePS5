@@ -1,4 +1,6 @@
-extern "C" void mkw_native_block(unsigned long long, const void*, unsigned long long);
+// The PS5 app's native-sample hook (headless/mkw_native_sample.inc). The host test suites link the
+// same JIT without the app: a weak no-op stands in, and the app's definition replaces it.
+extern "C" __attribute__((weak)) void mkw_native_block(unsigned long long, const void*, unsigned long long) {}
 // EglantinePS5: Jit::Impl with one compiled-code namespace per guest process (inserted into
 // a64_interface.cpp in place of upstream's Impl; see headless/dynarmic/jit_group.h).
 //
