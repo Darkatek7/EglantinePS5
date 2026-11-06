@@ -28,7 +28,9 @@ std::string Entry() {
     Put<std::uint32_t>(out, 1);                    // environments
     Put<std::uint64_t>(out, 16);                   // code bytes
     for (int i = 0; i < 4; ++i) Put<std::uint64_t>(out, 0);  // texture types, formats, values, replacements
-    for (int i = 0; i < 6; ++i) Put<std::uint32_t>(out, 0);  // local memory ... viewport transform
+    // local memory, texture bound, surface bound, start address, read lowest, read highest,
+    // viewport transform (FileEnvironment::Deserialize, video_core/shader_environment.cpp)
+    for (int i = 0; i < 7; ++i) Put<std::uint32_t>(out, 0);
     Put(out, Shader::Stage::Compute);
     out.append(16, '\x11');                        // code
     out.append(16, '\0');                          // workgroup size, shared memory size
