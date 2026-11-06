@@ -4,8 +4,9 @@ set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-mkdir -p .local build/headless-host build/fixture
-bash tools/build-core-fixture.sh
+# The host (Linux) test suites of the port's code (make test). Only the PS5 app is built and
+# released: no desktop emulator is built here (the PS5 build makes its own guest fixtures).
+mkdir -p .local
 # Thousands of dependency files and compiler checks are slow across /mnt/c.
 cache_parent="${XDG_CACHE_HOME:-$HOME/.cache}"
 if [[ ! -f .local/headless-cache ]] || [[ ! -d "$(cat .local/headless-cache)" ]]; then
@@ -52,7 +53,7 @@ cmake -S "$eden" -B "$scratch/build" -G Ninja \
 python3 -B "$root/headless/check_slab_lifetime.py" \
     "$scratch/build/headless/include/core/hle/kernel/slab_helpers.h" \
     "$scratch/source/src/core/hle/kernel/slab_helpers.h"
-cmake --build "$scratch/build" --target eden-headless eden-romfs-check eden-devices-check eden-scalar-check eden-memory-check eden-ryujinx-check eden-mods-check eden-shader-cache-check eden-settings-check eden-patch-library-check eden-update-check eden-update-files-check eden-profiles-check eden-save-sync-check -j "${EDEN_BUILD_JOBS:-$(nproc)}"
+cmake --build "$scratch/build" --target eden-romfs-check eden-devices-check eden-scalar-check eden-memory-check eden-ryujinx-check eden-mods-check eden-shader-cache-check eden-settings-check eden-patch-library-check eden-update-check eden-update-files-check eden-profiles-check eden-save-sync-check -j "${EDEN_BUILD_JOBS:-$(nproc)}"
 python3 -B "$root/tools/check-sparse-header.py" "$scratch/build"
 python3 -B "$root/tools/check-macro-headers.py" "$scratch/build"
 python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/build"
@@ -79,5 +80,3 @@ python3 -B "$root/tools/check-remote.py"
 # The same against real RomM servers in Docker (only with ROMM_CHECK=1, and Docker).
 python3 -B "$root/tools/check-romm.py"
 bash tools/check-headless-devices.sh
-cp "$scratch/build/bin/eden-headless" build/headless-host/eden-headless
-cp "$scratch/build/compile_commands.json" build/headless-host/compile_commands.json
