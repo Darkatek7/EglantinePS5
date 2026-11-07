@@ -1266,6 +1266,22 @@ void GuestMemoryFreed(std::uint64_t offset, std::size_t bytes) noexcept {
     }
 }
 
+// Host memory behind [offset, offset + bytes) of the guest's memory (the memory report splits it
+// by the guest kernel's pools). Whole slots count 2 MiB, Fine slots their kept pages.
+std::size_t GuestMemoryHeldIn(std::uint64_t offset, std::size_t bytes) noexcept {
+    SparseRange* const range = guest_range.load(std::memory_order_acquire);
+    if (range == nullptr || range->state == nullptr || bytes == 0) return 0;
+    const std::size_t slots = (range->end - range->begin.load(std::memory_order_relaxed)) / SparseSlot;
+    std::size_t held = 0;
+    const std::size_t last = std::min<std::size_t>(slots, (offset + bytes + SparseSlot - 1) / SparseSlot);
+    for (std::size_t slot = static_cast<std::size_t>(offset / SparseSlot); slot < last; ++slot) {
+        const auto state = SlotState(*range, slot);
+        if (state == SlotOwn || state == SlotShared) held += SparseSlot;
+        else if (state == SlotFine) held += FineKept(*range, slot) * FinePage;
+    }
+    return held;
+}
+
 // For the host checks: one scan pass now, and a slot's state (0 Zero, 1 Own, 2 Shared, -1 none).
 void GuestMemoryScanNow() noexcept {
     if (SparseRange* const range = service_range.load(std::memory_order_acquire)) ScanPass(*range);
