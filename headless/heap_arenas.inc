@@ -1037,8 +1037,8 @@ static int eden_tcache_keep(void *address, size_t usable) {
  * asks for memory, as far as the first calls up say. Sampled blocks count EDEN_SITE_RATE times. */
 extern const char __eden_text_start[];
 extern const char __eden_text_end[];
-#define EDEN_SITE_BLOCKS 262144u
-#define EDEN_SITE_TABLE 8192u
+#define EDEN_SITE_BLOCKS 131072u
+#define EDEN_SITE_TABLE 4096u
 #define EDEN_SITE_PCS 10u
 #define EDEN_SITE_TOP 30u
 #define EDEN_SITE_RATE 128u
