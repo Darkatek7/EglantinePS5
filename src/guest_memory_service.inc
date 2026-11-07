@@ -857,16 +857,12 @@ bool scanner_stop = false;
 // soon as the caches have given memory back (the scanner only passes every 20 s).
 std::thread keeper;
 
-std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept; // below
 void ReserveKeeper() {
     std::unique_lock lock{scanner_mutex};
     while (!scanner_stop) {
         scanner_wake.wait_for(lock, std::chrono::milliseconds(100), [] { return scanner_stop; });
         if (scanner_stop) break;
         lock.unlock();
-        // A write (or an unpack) waits for a block in the fault handler (WaitForBlock): device
-        // memory nothing is bound to and cold guest memory go back from here, not from the handler.
-        if (memory_waiters.load(std::memory_order_acquire) != 0) (void)RecoverMemory(std::size_t{32} << 20, false);
         FillReserve();
         lock.lock();
     }
