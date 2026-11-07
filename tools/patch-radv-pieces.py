@@ -31,6 +31,9 @@ PIECES = r'''
 /* ''' + MARK + r''': a buffer from 2 MiB pieces of direct memory, mapped in order at its
  * device-region granules, for when the pool has no run as long as the buffer. Each piece is
  * mapped at the address asked for or not at all (never over another mapping). */
+/* The app's: gives memory back when the pool has none (EglantinePS5, absent elsewhere). */
+extern size_t eden_memory_recover(size_t bytes) __attribute__((weak));
+
 static bool
 radv_ps5_memory_alloc_pieces(uint64_t bytes, uint64_t alignment, struct radv_ps5_memory *out)
 {
@@ -143,7 +146,17 @@ radv_ps5_memory_alloc(uint64_t bytes, uint64_t alignment, bool window32, struct 
          '''   int64_t physical = -1;
    if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), bytes, alignment,
                                      RADV_PS5_DIRECT_TYPE, &physical) != 0)
-      return !window32 && bytes >= RADV_PS5_LARGE_BYTES && radv_ps5_memory_alloc_pieces(bytes, alignment, out);
+   {
+      /* No run that long: pieces; else the app gives memory back (eden_memory_recover packs cold
+       * guest memory) and the run, or pieces, are asked for once more. */
+      if (!window32 && bytes >= RADV_PS5_LARGE_BYTES && radv_ps5_memory_alloc_pieces(bytes, alignment, out))
+         return true;
+      if (!eden_memory_recover || eden_memory_recover(bytes + (UINT64_C(16) << 20)) == 0)
+         return false;
+      if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), bytes, alignment,
+                                        RADV_PS5_DIRECT_TYPE, &physical) != 0)
+         return !window32 && bytes >= RADV_PS5_LARGE_BYTES && radv_ps5_memory_alloc_pieces(bytes, alignment, out);
+   }
 
    /* A window buffer goes where'''),
         ('''   const int32_t unmapped = sceKernelMunmap(memory->cpu, memory->bytes);
@@ -211,4 +224,4 @@ if changed:
     receipt = root.parent / 'mihawk-vulkan-review/.deps/native/radv-release/PROVENANCE.txt'
     if source.resolve() == (root.parent / 'mihawk-vulkan-review/.deps/work/radv-src').resolve() and receipt.exists():
         receipt.replace(receipt.with_suffix('.base.txt'))
-print('RADV memory pieces: buffers from 2 MiB pieces when the pool has no run long enough')
+print('RADV memory pieces: buffers from 2 MiB pieces, and memory asked back from the app')
