@@ -76,6 +76,86 @@ reallocation (`returns_clear` 264).
 The crash stays: the guest really writes ~4.5 GB that it keeps. Freed memory came back on
 reallocation before as well, just later.
 
+## Research, 2026-11-07: what fills the pool, and packing cold guest memory
+
+**Where the guest's memory is** (`EDEN_GUEST_POOLS`, every 20 s). All of it is the game's own
+application pool: 4.7 GB at 180 s and still growing ~10 MiB/s. The GPU-only regions (system
+non-secure pool) hold 0 MiB. A smaller memory layout does not boot: with
+`EDEN_NX2_MEMORY_LAYOUT_GB=10` or `8`, MKW jumps to address 0 at 30 s.
+
+**Eden's heap** holds 1.9–2.5 GB, of which 1.4–1.7 GB is in use. Its trim only gives back 32 MiB
+pieces with no block in them. The free space inside pieces belongs to the SDK's mspaces, so it
+cannot be given back.
+
+**Cold guest memory** (`EDEN_CRAM_COLD_REPORT=1`). At ~160 s, 2.5 GB of 4.4 GB held had not been
+written for 60 s or more. Sampled with LZ4, it compresses to **27%** (~0.8 ms per 2 MiB).
+
+### Packing (`EDEN_CRAM_PACK`, on by default)
+
+- **Pack:** while the pool's largest free block is under 1.5 GiB, the scanner LZ4-compresses Own
+  slots unwritten for 60 s or more (scanning every 5 s while short). It does up to 512 MiB per
+  pass, coldest first. The packed data goes to a store of 2 MiB direct-memory blocks outside
+  Eden's heap, the slot's block goes back, and the slot maps the zero block with no access.
+- **Unpack:** any access faults, and the handler unpacks the slot into a new block. It
+  decompresses in a separate view and only then maps the block at the slot.
+- **Thrash guard:** slots that come back wait twice as long before being packed again.
+- **First version bug:** a slot mapped readable for a moment showed zeroes, and a guest thread
+  jumped to address 0.
+
+Packing frees 2 MiB blocks all over the pool. The PS5 RADV winsys took each buffer as one run, so
+its 64 MiB VMA blocks still failed with ~650 MiB free in 2 MiB blocks. `tools/patch-radv-pieces.py`
+builds such a buffer from 2 MiB pieces at its device-region granules.
+
+| MKW 1x, 2 runs of 300 s each | Packing | `EDEN_CRAM_PACK=0` |
+|---|---|---|
+| Out of device memory at | **203 / 244 s** | 163 / 120 s |
+| FPS | 23.9 / 26.3 | 20.9 / 18.9 |
+| Packed (stored) | 0.72–1.06 GB (140–185 MiB) | — |
+| Unpacked again | 25–56% of packs | — |
+
+The crash moves ~80 s later.
+
+### Memory on demand, and the trims (final state)
+
+- **Recovery on demand.** `eden_memory_recover(bytes)` first asks the driver to trim, then packs
+  the coldest slots (unwritten ≥ 10 s). Three places call it:
+  - the RADV winsys, when direct memory is refused;
+  - VMA allocations (core patch `0023`);
+  - Eden's heap commits, through a variant that never waits (the heap may hold its growth lock).
+
+  The guest reserve is 128 MiB while packing runs (`EDEN_CRAM_RESERVE_MIB`).
+- **Heap arenas.** Per-thread arenas held 802 MiB with 368 MiB live, 44 of them empty: arenas stay
+  with the thread records that made them. A thread that would make a new arena now takes the
+  emptiest one in the process if it is under half full. That is 100–220 MiB less heap
+  (`EDEN_HEAP_ARENA_REUSE=0` turns it off). `EDEN_HEAP_SLACK` in the memory report shows the split.
+- **Driver trim** (`tools/patch-radv-trim.py`). VMA blocks held 27–880 MiB more than their
+  allocations (holes left by evicted images); smaller VMA blocks did not help.
+  - The winsys counts, per 2 MiB granule of a buffer object, the images and buffers bound over it
+    (counted at bind, released at destroy).
+  - `radv_ps5_eden_trim` gives back granules with nothing bound and maps the zero block there. It
+    gives back 130–330 MiB per pass.
+  - A bind over a given-back granule takes a new piece first, or fails with
+    `VK_ERROR_OUT_OF_DEVICE_MEMORY` so the app recovers memory and binds again.
+- **Texture cache ceiling for Switch 2 titles** (core patch `0024`). The thresholds are capped at
+  3.5/4 GiB (expected/critical); the environment variables still override them.
+
+| MKW 1x | Ended at |
+|---|---|
+| none of the above | 113–180 s |
+| packing + RADV pieces | 203 / 244 s |
+| + recovery, arena reuse, driver trim | 281 / 291 / 300+ s |
+| + texture cache ceiling (default) | 241 / 281 / 294 / 360+ / 420+ s |
+
+**Dead ends** (measured):
+- A smaller memory layout (10/8 GB): MKW does not boot.
+- 16 MiB VMA blocks: the holes come from freed images, not from the block size.
+- A 3/3.5 GiB texture cache: 8–11 s re-upload stalls.
+- 0.75x resolution: 244 / 231 s, no gain.
+- Recovering memory on the reserve keeper while writes wait: 8–15 s stalls.
+
+**It still runs out at 4–7 minutes:** the guest's ~4.4 GB, the driver's ~4 GB and Eden's ~1.5 GB
+fill the 12 GiB pool. ProsperoEden's MKW figures are from a PS5 Pro, whose pool is ~2 GB larger.
+
 ## The driver's own heap figure counts memory twice
 
 The PS5 winsys reports its whole allocation total for both of its heaps. On MKW, VMA's

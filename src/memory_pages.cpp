@@ -24,6 +24,18 @@
 #include <vector>
 
 #include "fastmem.h"
+// Linked in the app (common, lz4); absent in the host checks that build this file alone.
+// The driver gives back device memory no bound resource uses (tools/patch-radv-trim.py; the RADV
+// archive's symbols carry the isolation prefix). Absent in the host checks and other drivers.
+extern "C" [[gnu::weak]] std::uint64_t eden_radv_private_radv_ps5_eden_trim(std::uint64_t want);
+extern "C" {
+[[gnu::weak]] int LZ4_compress_default(const char* source, char* dest, int source_size, int max_dest_size);
+[[gnu::weak]] int LZ4_decompress_safe(const char* source, char* dest, int compressed_size, int max_decompressed_size);
+[[gnu::weak]] int LZ4_compressBound(int input_size);
+}
+namespace Common::Compression {
+[[gnu::weak]] std::vector<std::uint8_t> CompressDataLZ4(const std::uint8_t* source, std::size_t source_size);
+}
 
 #ifdef PS5_NATIVE
 // Keep CPU heaps/tables and JIT views out of RADV's high-word-2 GPU window.
