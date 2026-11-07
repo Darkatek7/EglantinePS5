@@ -185,6 +185,10 @@ void* StoreAlloc(std::size_t size, std::int64_t* donate) noexcept {
 }
 // Blocks whose data all went back (pack_mutex held).
 void StoreReclaim() noexcept {
+    // Nothing before the store has started: its tables are not set up (zero is not "no block"),
+    // and mapping at store_base 0 would land on the app's own code (the self-test's range goes
+    // back through here at start).
+    if (store_base == 0) return;
     for (std::size_t i = 0; i < StoreBlocks; ++i) {
         if (store_physical[i] < 0 || i == store_current || store_live[i].load(std::memory_order_acquire) != 0) continue;
         if (!MapSlot(store_base + i * StoreBlock, PROT_NONE, zero_block)) continue;
