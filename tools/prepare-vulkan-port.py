@@ -242,6 +242,109 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
     ('    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");\n        return;\n    }',
      '    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");\n        return;\n    }\n'
      '    SCOPE_EXIT { SyncProbe(scheduler, "dispatch", pipeline); };'),
+    # The pages any texture cache image was ever registered in (headless/image_pages.h).
+    ('#include "performance.h"\n#include "dev_vulkan.h"', '#include "performance.h"\n#include "image_pages.h"\n#include "dev_vulkan.h"'),
+    # A read of memory no image was ever registered in: the texture cache would find none and
+    # change nothing, so its lock (held by the GPU thread through every draw) is not taken
+    # (headless/image_pages.h). Only the texture cache's part: the buffer cache's read note and
+    # flush area before and after it stay as they were. With cpu_read_skip (performance.h, off by
+    # default) a read whose texture cache lock is held answers "no download" instead of waiting.
+    ('''    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        auto area = texture_cache.GetFlushArea(addr, size);''',
+     '''    if (!::Eden::ImagePages::NeverHeld(addr, size)) {
+        if (::Eden::Performance::cpu_read_skip.load(std::memory_order_relaxed)) {
+            if (!texture_cache.mutex.try_lock()) {
+                ::Eden::Performance::cpu_read_skipped.fetch_add(1, std::memory_order_relaxed);
+                // Empty: the read does not remember it, so the next read checks again.
+                return VideoCore::RasterizerDownloadArea{.start_address = addr, .end_address = addr, .preemtive = true};
+            }
+        } else {
+            ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        }
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        auto area = texture_cache.GetFlushArea(addr, size);'''),
+    # Guest writes while the GPU thread holds a cache lock are queued instead of waiting
+    # (performance.h cpu_write_defer); the GPU thread runs them before its next draw, clear,
+    # dispatch or engine copy (MemoryManager::FlushCaching, headless/CMakeLists.txt). A write to
+    # the page this core's last queued write covers joins it. Under the buffer cache lock the
+    # buffer pages after the write are marked CPU-modified as their own first writes would
+    # (performance.h cpu_write_ahead), up to a page no buffer covers or one the GPU modified.
+    ('''    {
+        ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+''',
+     '''    if (::Eden::Performance::cpu_write_defer.load(std::memory_order_relaxed) &&
+        !::Eden::Performance::deferred_replay &&
+        ::Eden::Performance::ExtendDeferredWrite(addr, size, ::Eden::Performance::cpu_write_core)) {
+        return false;
+    }
+    {
+        if (!::Eden::Performance::GuestCacheLockOrDefer(buffer_cache.mutex)) {
+            ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
+            return false;
+        }
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+        const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
+        DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
+        for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
+            if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
+                buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
+                break;
+            }
+        }
+    }
+    {
+        if (!::Eden::Performance::GuestCacheLockOrDefer(texture_cache.mutex)) {
+            ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
+            return false;
+        }
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+'''),
+    # The GPU thread, before it takes both cache locks for a draw: a guest thread asleep on one
+    # goes first (performance.h YieldToGuests).
+    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    buffer_cache_runtime.BeginReadbackWriteBatch();\n    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };\n    prepared_pipeline = pipeline;\n',
+     '    ::Eden::Performance::YieldToGuests();  // a guest thread asleep on a cache lock goes first\n'
+     '    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    buffer_cache_runtime.BeginReadbackWriteBatch();\n    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };\n    prepared_pipeline = pipeline;\n'),
+    # FlushCommands submits only when nothing has been submitted since the last draw, clear or
+    # dispatch was recorded (FlushWork notes the scheduler's tick at each). It asked only whether
+    # a draw was counted since the counter was last cleared, and a submission by anything else (a
+    # fence's own Flush, a download) does not clear it: the second submission held nothing, a
+    # quarter of a millisecond of the worker thread in the driver each (a large open-world game
+    # made seven of them a frame on ProsperoEden).
+    ('void RasterizerVulkan::FlushCommands() {\n    if (draw_counter == 0) {\n        return;\n    }\n    draw_counter = 0;\n    scheduler.Flush();\n}',
+     'namespace {\n// The scheduler\'s tick when the last draw, clear or dispatch was recorded (GPU thread).\nu64 recorded_tick = 0;\n} // namespace\n\n'
+     'void RasterizerVulkan::FlushCommands() {\n    if (draw_counter == 0) {\n        return;\n    }\n    draw_counter = 0;\n'
+     '    if (scheduler.CurrentTick() != recorded_tick) {\n        return; // a submission has taken every draw already\n    }\n    scheduler.Flush();\n}'),
+    ('    const u32 CHECK_MASK = ::Eden::Performance::dispatch_mask.load(std::memory_order_relaxed);\n',
+     '    const u32 CHECK_MASK = ::Eden::Performance::dispatch_mask.load(std::memory_order_relaxed);\n    recorded_tick = scheduler.CurrentTick();\n'),
+    # Each draw counts toward the frame's busyness (headless/astc_policy.h: a CPU-converted ASTC
+    # texture decodes in the background only in a busy frame). Its own anchor, apart from the
+    # cache-lock hunk above, which other ports change.
+    ('#include "video_core/texture_cache/texture_cache_base.h"',
+     '#include "video_core/texture_cache/texture_cache_base.h"\n#include "astc_policy.h"'),
+    ('    VideoCommon::LoadingProbe::gpu.Mark("draw prepare");\n    mesh_draw = pipeline->IsMeshPipeline();',
+     '    VideoCommon::LoadingProbe::gpu.Mark("draw prepare");\n    ::Eden::AstcPolicy::Draw();\n'
+     '    mesh_draw = pipeline->IsMeshPipeline();'),
 ])
 # Host conditional rendering (VK_EXT_conditional_rendering, dev_vulkan.h hcr_mode): count each
 # decision (EDEN_DEV_GUEST cond= slots 13-19); hcr=exact sends the conditions Eden would draw
@@ -626,7 +729,18 @@ adapt('src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp', 'vulkan_stagi
     }
 '''),
     ('#include "video_core/vulkan_common/vulkan_wrapper.h"\n',
-     '#include "video_core/vulkan_common/vulkan_wrapper.h"\n#include <atomic>\n#include <cstdio>\n#include "staging_buffers.h"\n'),
+     '#include "video_core/vulkan_common/vulkan_wrapper.h"\n#include <atomic>\n#include <cstdio>\n#include "performance.h"\n#include "staging_buffers.h"\n'),
+    # While the console's pool is short, every staging buffer the GPU is done with goes back at the
+    # frame's end. Eden frees them slowly - one size class a frame, 16 buffers at most, so a buffer
+    # can stay 64 frames after its last use - and a course loading in Mario Kart World stages its
+    # textures a layer at a time: the buffers it left behind held the pool its next request needed.
+    # (ProsperoEden's TickFrame release; ReleaseCompleted is the same walk the transcode path uses.)
+    ('    ReleaseCache(MemoryUsage::Download);\n}',
+     '    ReleaseCache(MemoryUsage::Download);\n'
+     '    if (::Eden::Performance::GraphicsMemoryIsShort()) {\n'
+     '        ReleaseCompleted();\n'
+     '    }\n'
+     '}'),
     ('void StagingBufferPool::TickFrame() {',
      'void StagingBufferPool::ReleaseCompleted() {\n'
      '    const auto idle = [this](const StagingBuffer& entry) {\n'
@@ -693,8 +807,48 @@ adapt('src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp', 'vulkan_stagi
      '        }\n'
      '    }\n'),
 ])
+# The software blitter keeps its scratch at the largest blit it has done: three 64 MiB buffers in
+# Mario Kart World, held for the session in the pool the guest and the GPU share. Past 16 MiB they
+# go back once the blit has written its result (the scoped guest write ends with its block; the
+# loading probe's writeback scope ends there too, after the write, as it did at the return).
+adapt('src/video_core/engines/sw_blitter/blitter.cpp', 'sw_blitter.cpp', [
+    ('    const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);\n',
+     '    {\n    const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);\n'),
+    ('    VideoCommon::LoadingProbe::writeback.Mark("scoped memory destructor", dst_size);\n    return true;\n}\n',
+     '    VideoCommon::LoadingProbe::writeback.Mark("scoped memory destructor", dst_size);\n    }\n'
+     '    constexpr size_t kKeepBytes = 16u << 20;\n'
+     '    if (impl->tmp_buffer.capacity() > kKeepBytes) impl->tmp_buffer = Common::ScratchBuffer<u8>{};\n'
+     '    if (impl->src_buffer.capacity() > kKeepBytes) impl->src_buffer = Common::ScratchBuffer<u8>{};\n'
+     '    if (impl->dst_buffer.capacity() > kKeepBytes) impl->dst_buffer = Common::ScratchBuffer<u8>{};\n'
+     '    if (impl->intermediate_src.capacity() * sizeof(f32) > kKeepBytes) impl->intermediate_src = Common::ScratchBuffer<f32>{};\n'
+     '    if (impl->intermediate_dst.capacity() * sizeof(f32) > kKeepBytes) impl->intermediate_dst = Common::ScratchBuffer<f32>{};\n'
+     '    return true;\n}\n'),
+])
 # Development A/B switches for device features (headless/dev_vulkan.h, dev-settings).
 adapt('src/video_core/vulkan_common/vulkan_device.cpp', 'vulkan_device.cpp', [
+    # 16 MiB blocks: the pool the console's GPU allocates from is the CPU's and the guest's too, and
+    # what a block holds goes back to it only when the block is empty. With 64 MiB blocks Mario Kart
+    # World's collector deleted 2,440 images and the allocator held 3,812 MiB before and after (the
+    # 584 left were spread over every block), and the pool ran out. Anything over 8 MiB is then an
+    # allocation of its own, given back when freed; the page tables are the same (one per 2 MiB).
+    # EDEN_PS5_VMA_BLOCK_MIB still overrides it.
+    ("std::strtoul(value, nullptr, 10) : 64;\n"
+     "                return static_cast<VkDeviceSize>(mib >= 4 && mib <= 256 ? mib : 64) * 1024u * 1024u;",
+     "std::strtoul(value, nullptr, 10) : 16;\n"
+     "                return static_cast<VkDeviceSize>(mib >= 4 && mib <= 256 ? mib : 16) * 1024u * 1024u;"),
+    # The allocator counts what it holds itself instead of asking the driver. The driver's figures
+    # are wrong on the console: it counts each allocation of graphics memory twice (as VRAM and as
+    # visible VRAM), so the allocator saw the budget of the 8 GiB heap used up at 4 GiB. From there
+    # it could make no more of its blocks and gave every image memory of its own: 926 allocations
+    # where 40 blocks had done, a third of what it held unused (1.3 of 3.9 GiB in a large open-world
+    # game at 2x), and the shared pool cut into hundreds of pieces. Without the driver's budget its
+    # own count stands against four fifths of the heap. Only VMA's view changes: the caches' usage
+    # and budget (GetDeviceMemoryUsage/GetDeviceMemoryBudget below) still read the extension or the
+    # pool, and vmaGetHeapBudgets' statistics are VMA's own either way. A request past VMA's
+    # four fifths is still asked for again outside the budget (ALLOCATOR_REFUSED above and Eglantine's
+    # relaxed retries); with the double count gone that retry is the rare path it was meant to be.
+    ('    if (extensions.memory_budget) {\n        flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;\n    }\n',
+     '    // The driver\'s budget is not asked for: its count is double (tools/prepare-vulkan-port.py).\n'),
     ('#include <algorithm>', '#include <algorithm>\n#include <cstdio>\n#include "dev_vulkan.h"\n#include "performance.h"'),
     # "Memory in use" for the texture and buffer caches: on the console, the budget less what is
     # left of the pool the CPU shares with the GPU (performance.h, graphics_memory_free).
@@ -974,10 +1128,21 @@ gc_setup = '''    const auto ReclaimedBytes = [&](const Image& image) {
 cleanup_begin = gc.index('    const auto Cleanup = [')
 cleanup_end = gc.index('](ImageId image_id)', cleanup_begin) + 1
 cleanup_capture = gc[cleanup_begin:cleanup_end]
+# Eglantine's own block-order walk (tools/eglantine-patches/0012, Collect) gives way to
+# ForEachCandidate (vulkan_gc_downloads.inc): the same order, but over up to 1,024 candidates
+# instead of 8 per eviction allowed, then on oldest first, and the download lookahead walks it too.
+collect_begin = gc.index('    const auto Collect = [&] {')
+collect_begin = gc.rindex('    };\n', 0, collect_begin) + len('    };\n')  # with 0012's comment
+collect_end = gc.index('    Configure(false);', collect_begin)
+collect_original = gc[collect_begin:collect_end]
 for old, new in [
     (cleanup_capture,
      gc_setup + '\n    const auto Cleanup = [&, this]'),
-    ('        if (must_download) {', '        if (must_download && !TakePrefetched(image_id, image)) {'),
+    (collect_original,
+     '    const auto Collect = [&] { ForEachCandidate(frame_tick - ticks_to_destroy, Cleanup); };\n'),
+    ('        if (must_download) {',
+     '        if (must_download && KeepLargeDirty(image)) {\n            return false;\n        }\n'
+     '        if (must_download && !TakePrefetched(image_id, image)) {'),
     # Time the per-image drain Cleanup still takes for an image the prefetch could not batch.
     # One GPU pipeline wait per eviction, against one wait for a whole batch in the batched path:
     # this is the stall the prefetch exists to remove, so keep it visible.
@@ -993,6 +1158,80 @@ for old, new in [
     ('(!high_priority_mode && must_download)) {', '(!DirtyEvictions() && must_download)) {'),
     ('    Configure(false);', '    Configure(false);\n    PrefetchDownloads();'),
     ('        Configure(true);', '        Configure(true);\n        PrefetchDownloads();'),
+    # The eviction budget counts visits, not evictions: skipped images (decoding,
+    # costly, or dirty images kept below the critical mark) burn it and stop the
+    # scan, so kept images shield everything behind them. Count evictions; bound
+    # the scan separately. gc_scan=upstream restores visit counting.
+    ('    size_t num_iterations = 0;',
+     '    size_t num_iterations = 0;\n    size_t num_scanned = 0;\n    constexpr size_t max_scanned = 8192;'),
+    ('        if (num_iterations == 0) {\n            return true;\n        }\n        --num_iterations;',
+     '        if (num_iterations == 0 || num_scanned >= max_scanned) {\n            return true;\n        }\n        ++num_scanned;\n'
+     '        if (::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }'),
+    # A costly image (ASTC kept as BC3, converted on the CPU) goes only past Eden's own critical
+    # mark, not when the console's pool alone is critical: rebuilding it decodes it again on the
+    # CPU, in memory the pool did not have (Mario Kart World: 1,561 evicted in one window, 3.4 GB
+    # of conversions and uploads in the next, and the decoder's allocation ended the session).
+    ('        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!DirtyEvictions() && must_download)) {',
+     '        const bool costly_kept = !(aggressive_mode && total_used_memory >= critical_memory) &&\n'
+     '                                 !::Eden::Performance::gc_old_costly && True(image.flags & ImageFlagBits::CostlyLoad);\n'
+     '        if (costly_kept || (!DirtyEvictions() && must_download)) {'),
+    ('            probe_costly_skips += !aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad);\n',
+     '            probe_costly_skips += costly_kept;\n'),
+    ('            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n',
+     '            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n'
+     '        if (!::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }\n'),
+    # The aggressive pass gets its own scan allowance: Configure resets the
+    # eviction budget per pass, and the scan counter must reset with it, or a
+    # first pass spent on skips would stillborn the second one. Runs after the
+    # Configure(true) pair above, whose first line this matches.
+    ('        Configure(true);',
+     '        Configure(true);\n        num_scanned = 0;'),
+    # While the console's pool is short (performance.h, GraphicsMemoryIsShort) the collector
+    # works as if past its first mark, past both once the pool is critical (GraphicsMemoryIsCritical),
+    # and stays so for the whole run instead of easing off after one eviction under a mark the
+    # pool never reaches.
+    ('    u64 ticks_to_destroy = 0;\n',
+     '    u64 ticks_to_destroy = 0;\n    const bool memory_short = ::Eden::Performance::GraphicsMemoryIsShort();\n'),
+    ('        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n',
+     '        if (memory_short) {\n'
+     '            // Short but not critical, only what 600 frames left unused goes (EDEN_NX2_TC_SHORT_AGE):\n'
+     '            // at 60, and 10 whenever use passed the texture cache\'s own critical mark, a race\n'
+     '            // evicted and rebuilt 1,000-2,400 textures every 600 frames, many still in use, while\n'
+     '            // the pool stayed short throughout (an image freed inside a graphics block does not\n'
+     '            // give the pool a larger free block). On the console the pool decides: critical\n'
+     '            // (GraphicsMemoryIsCritical) collects as before.\n'
+     '            static const u64 short_age = [] {\n'
+     '                const char* value = std::getenv("EDEN_NX2_TC_SHORT_AGE");\n'
+     '                return value != nullptr ? std::strtoull(value, nullptr, 10) : 600ULL;\n'
+     '            }();\n'
+     '            high_priority_mode = true;\n'
+     '            aggressive_mode = allow_aggressive && ::Eden::Performance::GraphicsMemoryIsCritical();\n'
+     '            ticks_to_destroy = (std::max)(aggressive_mode ? u64{10} : short_age, min_age);\n'
+     '        }\n'
+     '        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n'),
+    ('        if (aggressive_mode && total_used_memory < critical_memory) {',
+     '        if (aggressive_mode && !memory_short && total_used_memory < critical_memory) {'),
+    ('        } else if (high_priority_mode && total_used_memory < expected_memory) {',
+     '        } else if (high_priority_mode && !memory_short && total_used_memory < expected_memory) {'),
+    ('    if (total_used_memory >= critical_memory) {\n        Configure(true);',
+     '    if (total_used_memory >= critical_memory || memory_short) {\n        Configure(true);'),
+    # While the pool is short, costly images 300 frames unused (a course left behind) go too, in a
+    # pass of their own: kept whenever only the pool was short, Mario Kart World's next course took
+    # 1.2 GB of graphics memory within five seconds with nothing the collector could give back, and
+    # waiting until the pool was critical left a course load too little room (pro27: 1.37 GB usable,
+    # then out of memory within one window). On a light frame (a loading screen: astc_policy.h)
+    # the course left behind is unused after 10 frames already, and the next one is about to load.
+    ('        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n',
+     '        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n'
+     '    const u64 old_age = ::Eden::AstcPolicy::InBackground() ? 300 : 10;\n'
+     '    if (memory_short && frame_tick > old_age) {\n'
+     '        Configure(true);\n'
+     '        num_scanned = 0;\n'
+     '        ::Eden::Performance::gc_old_costly = true;\n'
+     '        PrefetchDownloads();\n'
+     '        ForEachCandidate(frame_tick - old_age, Cleanup);\n'
+     '        ::Eden::Performance::gc_old_costly = false;\n'
+     '    }\n'),
 ]:
     if gc.count(old) != 1:
         raise RuntimeError(f'Pinned GC anchor changed: {old}')
@@ -1025,9 +1264,229 @@ for signature, index in (
     }
 '''
     texture_costs.append((anchor, anchor + scope))
+VULKAN_CACHE = 'if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {'
+# Large textures re-upload only the block rows guest writes changed (headless/texture_partial.h).
+# The Eglantine core has the mechanism (MarkPartialWrite / RefreshPartialContents) from 16 MiB on;
+# ProsperoEden's takes images from 1 MiB on (dev-settings tex_partial_kb), which is what this sets.
+# tex_partial=off keeps the core's bound; tex_partial_check=on compares each partial upload with a
+# whole unswizzle.
+texture_partial = [
+    ('#include "video_core/texture_cache/texture_cache_base.h"',
+     '#include "video_core/texture_cache/texture_cache_base.h"\n#include "texture_partial.h"\n#include "astc_policy.h"'),
+    ('    constexpr size_t min_size = 16_MiB;\n'
+     '    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |\n'
+     '                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |\n'
+     '                                       ImageFlagBits::TrimmedLevels | ImageFlagBits::AsynchronousDecode;\n'
+     '    if (False(image.flags & ImageFlagBits::Tracked)',
+     '    size_t min_size = 16_MiB;\n'
+     '    ' + VULKAN_CACHE + '\n'
+     '        if (Eden::Performance::tex_partial.load(std::memory_order_relaxed)) {\n'
+     '            min_size = Eden::Performance::tex_partial_min.load(std::memory_order_relaxed);\n'
+     '        }\n'
+     '    }\n'
+     '    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |\n'
+     '                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |\n'
+     '                                       ImageFlagBits::TrimmedLevels | ImageFlagBits::AsynchronousDecode;\n'
+     '    if (False(image.flags & ImageFlagBits::Tracked)'),
+    ('    auto copies = UnswizzleImageRows(*gpu_memory, image.gpu_addr, image.info, ranges, data);\n'
+     '    if (copies.empty()) {\n'
+     '        return false;\n'
+     '    }\n',
+     '    auto copies = UnswizzleImageRows(*gpu_memory, image.gpu_addr, image.info, ranges, data);\n'
+     '    if (copies.empty()) {\n'
+     '        return false;\n'
+     '    }\n'
+     '    ' + VULKAN_CACHE + '\n'
+     '        if (Eden::Performance::tex_partial_check.load(std::memory_order_relaxed)) {\n'
+     '            Eden::TexturePartial::Check(*gpu_memory, image, copies, std::span<const u8>(data));\n'
+     '        }\n'
+     '        Eden::Performance::tex_partial_uploads.fetch_add(1, std::memory_order_relaxed);\n'
+     '        Eden::Performance::tex_partial_bytes.fetch_add(data.size(), std::memory_order_relaxed);\n'
+     '    }\n'),
+]
+# A large texture array (2D, several layers, 64 MiB or more) the CPU converts is uploaded a layer at
+# a time, and an ASTC one converted in the background is decoded a layer at a time: Eden staged it
+# whole, a heap buffer and a staging buffer each the image's size (341 and 361 MiB for Mario Kart
+# World's terrain arrays) asked of the pool the guest's memory and the GPU share, at the moment a
+# course loads - the requests that ended its sessions. The bytes are the same; the largest block is
+# one layer. Arrays the GPU decodes keep the core's layer path (UploadsByLayer), and plain arrays its
+# chunked one (UploadInChunks), so only converted ones take this (ProsperoEden: every CPU array).
+LAYERED = ('image.info.type == ImageType::e2D && image.info.resources.layers > 1 && '
+           'image.guest_size_bytes >= LayerUploadMinSize')
+texture_layers = [
+    ('    ++images_uploaded;\n'
+     '    uploaded_bytes += image.guest_size_bytes;\n'
+     '    largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);\n'
+     '    if (!UploadInChunks(image)) {',
+     '    ++images_uploaded;\n'
+     '    uploaded_bytes += image.guest_size_bytes;\n'
+     '    largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);\n'
+     '    ' + VULKAN_CACHE + '\n'
+     '        if (' + LAYERED + ' && True(image.flags & ImageFlagBits::Converted) &&\n'
+     '            False(image.flags & (ImageFlagBits::AcceleratedUpload | ImageFlagBits::Sparse |\n'
+     '                                 ImageFlagBits::Remapped | ImageFlagBits::Unbacked |\n'
+     '                                 ImageFlagBits::TrimmedLevels))) {\n'
+     '            const s32 layers = image.info.resources.layers;\n'
+     '            ImageInfo layer_info = image.info;\n'
+     '            layer_info.resources.layers = 1;\n'
+     '            const size_t layer_map = MapSizeBytes(image) / layers;\n'
+     '            for (s32 layer = 0; layer < layers; ++layer) {\n'
+     '                const GPUVAddr layer_addr = image.gpu_addr + u64(layer) * image.info.layer_stride;\n'
+     '                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(\n'
+     '                    *gpu_memory, layer_addr, image.info.layer_stride, &swizzle_data_buffer);\n'
+     '                unswizzle_data_buffer.resize_destructive((std::max<size_t>)(\n'
+     '                    image.unswizzled_size_bytes / layers, CalculateUnswizzledSizeBytes(layer_info)));\n'
+     '                auto copies = UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,\n'
+     '                                             unswizzle_data_buffer);\n'
+     '                // The layer\'s converted size, where it is above the estimate (as the decode).\n'
+     '                auto layout = copies;\n'
+     '                ConvertedLayout(layer_info, layout);\n'
+     '                const size_t layer_out = layout.empty() ? layer_map :\n'
+     '                    (std::max<size_t>)(layer_map, layout.back().buffer_offset + layout.back().buffer_size);\n'
+     '                auto layer_staging = runtime.UploadStagingBuffer(layer_out);\n'
+     '                ConvertImage(unswizzle_data_buffer, layer_info, layer_staging.mapped_span, copies);\n'
+     '                for (auto& copy : copies) copy.image_subresource.base_layer = layer;\n'
+     '                image.UploadMemory(layer_staging, copies);\n'
+     '            }\n'
+     '            runtime.InsertUploadMemoryBarrier();\n'
+     '            return;\n'
+     '        }\n'
+     '    }\n'
+     '    if (!UploadInChunks(image)) {'),
+    ('    image.flags |= ImageFlagBits::IsDecoding;\n'
+     '    ++async_decodes_queued;\n'
+     '    auto decode = std::make_unique<AsyncDecodeContext>();',
+     '    ' + VULKAN_CACHE + '\n'
+     '        if (' + LAYERED + ') {\n'
+     '            image.flags |= ImageFlagBits::IsDecoding;\n'
+     '            const s32 layers = image.info.resources.layers;\n'
+     '            ImageInfo layer_info = image.info;\n'
+     '            layer_info.resources.layers = 1;\n'
+     '            const size_t layer_out = MapSizeBytes(image) / layers;\n'
+     '            // A layer\'s own sizes, not a share of the whole image\'s estimates: a decode that\n'
+     '            // wrote past its buffer corrupted the heap (TextureDecoder "mutex lock failed").\n'
+     '            const size_t layer_in = (std::max<size_t>)(image.unswizzled_size_bytes / layers,\n'
+     '                                                       CalculateUnswizzledSizeBytes(layer_info));\n'
+     '            const bool zero = False(image.flags & ImageFlagBits::ZeroFilled);\n'
+     '            image.flags |= ImageFlagBits::ZeroFilled;\n'
+     '            for (s32 layer = 0; layer < layers; ++layer) {\n'
+     '                ++async_decodes_queued;\n'
+     '                auto layer_decode = std::make_unique<AsyncDecodeContext>();\n'
+     '                auto* layer_ptr = layer_decode.get();\n'
+     '                layer_decode->image_id = image_id;\n'
+     '                async_decodes.push_back(std::move(layer_decode));\n'
+     '                const GPUVAddr layer_addr = image.gpu_addr + u64(layer) * image.info.layer_stride;\n'
+     '                std::vector<u8> layer_input(layer_in, 0);\n'
+     '                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> layer_swizzle(\n'
+     '                    *gpu_memory, layer_addr, image.info.layer_stride, &swizzle_data_buffer);\n'
+     '                auto layer_copies = UnswizzleImage(*gpu_memory, layer_addr, layer_info, layer_swizzle,\n'
+     '                                                   layer_input);\n'
+     '                auto zero_copies = layer_copies;\n'
+     '                ConvertedLayout(layer_info, zero_copies);\n'
+     '                const size_t out = zero_copies.empty() ? layer_out :\n'
+     '                    (std::max<size_t>)(layer_out, zero_copies.back().buffer_offset + zero_copies.back().buffer_size);\n'
+     '                if (out > layer_out) {\n'
+     '                    static std::atomic<u32> reported{};\n'
+     '                    if (reported.fetch_add(1) < 8) {\n'
+     '                        LOG_WARNING(HW_GPU, "Layer decode at {:#x} needs {} bytes, {} estimated", layer_addr, out, layer_out);\n'
+     '                    }\n'
+     '                }\n'
+     '                if (zero) {\n'
+     '                    for (auto& copy : zero_copies) copy.image_subresource.base_layer = layer;\n'
+     '                    auto zero_staging = runtime.UploadStagingBuffer(out);\n'
+     '                    std::memset(zero_staging.mapped_span.data(), 0, out);\n'
+     '                    image.UploadMemory(zero_staging, zero_copies);\n'
+     '                }\n'
+     '                auto layer_func = [layer_out = out, layer, copies = layer_copies, info = layer_info,\n'
+     '                                   input = std::move(layer_input), async_decode = layer_ptr]() mutable {\n'
+     '                    async_decode->decoded_data.resize_destructive(layer_out);\n'
+     '                    std::span copies_span{copies.data(), copies.size()};\n'
+     '                    ConvertImage(input, info, async_decode->decoded_data, copies_span);\n'
+     '                    for (auto& copy : copies) copy.image_subresource.base_layer = layer;\n'
+     '                    async_decode->copies = std::move(copies);\n'
+     '                    async_decode->complete.store(true, std::memory_order_release);\n'
+     '                };\n'
+     '                texture_decode_worker.QueueWork(std::move(layer_func));\n'
+     '            }\n'
+     '            if (zero) runtime.InsertUploadMemoryBarrier();\n'
+     '            return;\n'
+     '        }\n'
+     '    }\n'
+     '    image.flags |= ImageFlagBits::IsDecoding;\n'
+     '    ++async_decodes_queued;\n'
+     '    auto decode = std::make_unique<AsyncDecodeContext>();'),
+    # A layer's result is staged at its own size, and the image stays decoding until its last
+    # layer has landed (the collector does not take an image that is decoding).
+    ('        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));\n'
+     '        std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),',
+     '        auto staging = runtime.UploadStagingBuffer(async_decode->decoded_data.size());\n'
+     '        std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),'),
+    ('        image.UploadMemory(staging, async_decode->copies);\n'
+     '        image.flags &= ~ImageFlagBits::IsDecoding;',
+     '        image.UploadMemory(staging, async_decode->copies);\n'
+     '        if (std::none_of(async_decodes.begin(), async_decodes.end(), [&](const auto& other) {\n'
+     '                return other.get() != async_decode && other->image_id == async_decode->image_id &&\n'
+     '                       !other->cancelled;\n'
+     '            }))\n'
+     '            image.flags &= ~ImageFlagBits::IsDecoding;'),
+    # A whole-image decode too: its buffer at the converted layout's size where that is above
+    # the estimate (TickAsyncDecode then drops the result with an error instead of the decode
+    # writing past the buffer).
+    ('    const size_t out_size = MapSizeBytes(image);\n',
+     '    auto converted_layout = copies;\n'
+     '    ConvertedLayout(image.info, converted_layout);\n'
+     '    const size_t out_size = converted_layout.empty() ? MapSizeBytes(image) :\n'
+     '        (std::max<size_t>)(MapSizeBytes(image), converted_layout.back().buffer_offset +\n'
+     '                                                converted_layout.back().buffer_size);\n'),
+]
+# The decode thread hands a result over with complete's release store, the GPU thread takes it with
+# an acquire load: no mutex per decode. Each one's std::mutex was created at its first lock, a
+# texture array's course load queues one per layer (121 for a terrain array), and in 4 of ~24 races
+# a decode thread's lock failed ("mutex lock failed: Invalid argument", 325-328 s into a session).
+texture_decode_handoff = [
+    ('        // TODO: Do we need this lock?\n'
+     '        std::unique_lock lock{async_decode->mutex};\n'
+     '        async_decode->copies = std::move(copies);\n'
+     '        async_decode->complete = true;\n',
+     '        async_decode->copies = std::move(copies);\n'
+     '        async_decode->complete.store(true, std::memory_order_release);\n'),
+    ('        {\n'
+     '            // Release the lock before the context is erased below: unlocking it afterwards wrote\n'
+     '            // into freed memory (heap corruption, crashes minutes into title 1).\n'
+     '            std::unique_lock lock{async_decode->mutex};\n'
+     '            if (!async_decode->complete) {\n'
+     '                ++i;\n'
+     '                continue;\n'
+     '            }\n'
+     '        }\n',
+     '        // After this the context is the GPU thread\'s alone: the decode thread\'s store was\n'
+     '        // its last touch of it.\n'
+     '        if (!async_decode->complete.load(std::memory_order_acquire)) {\n'
+     '            ++i;\n'
+     '            continue;\n'
+     '        }\n'),
+]
+# An ASTC texture kept as BC3 and converted on the CPU (accelerate_astc=CpuAsynchronous) is converted
+# in the background in a busy frame only, and in place on a light screen (headless/astc_policy.h).
+# The frame is counted where the texture cache ends its own; draws in RasterizerVulkan::PrepareDraw.
+texture_astc_policy = [
+    ('    if (True(image.flags & ImageFlagBits::AsynchronousDecode)) {\n        QueueAsyncDecode(image, image_id);\n        return;\n    }',
+     '    if (True(image.flags & ImageFlagBits::AsynchronousDecode) && ::Eden::AstcPolicy::InBackground()) {\n        QueueAsyncDecode(image, image_id);\n        return;\n    }'),
+    ('    TickAsyncDecode();\n    TickAsyncUnswizzle();', '    ::Eden::AstcPolicy::Frame();\n    TickAsyncDecode();\n    TickAsyncUnswizzle();'),
+]
 adapt('src/video_core/texture_cache/texture_cache.h',
       'vulkan-cache/video_core/texture_cache/texture_cache.h', [
     ('namespace VideoCommon {', '#include "performance.h"\n#include "common/scope_exit.h"\nnamespace Vulkan { class TextureCacheRuntime; }\n\nnamespace VideoCommon {'),
+    # Every place an image is registered at is marked before the texture cache can find the
+    # image there (headless/image_pages.h): the two inserts below are the only ones.
+    ('#include "common/scope_exit.h"\nnamespace Vulkan { class TextureCacheRuntime; }',
+     '#include "image_pages.h"\n#include "common/scope_exit.h"\nnamespace Vulkan { class TextureCacheRuntime; }'),
+    ('        auto map_id =\n            slot_map_views.insert(image.gpu_addr, image.cpu_addr, image.guest_size_bytes, image_id);',
+     '        ::Eden::ImagePages::Mark(image.cpu_addr, image.guest_size_bytes);\n'
+     '        auto map_id =\n            slot_map_views.insert(image.gpu_addr, image.cpu_addr, image.guest_size_bytes, image_id);'),
+    ('            auto map_id = slot_map_views.insert(gpu_addr, cpu_addr, size, image_id);',
+     '            ::Eden::ImagePages::Mark(cpu_addr, size);\n'
+     '            auto map_id = slot_map_views.insert(gpu_addr, cpu_addr, size, image_id);'),
     (download_prefix, download_prefix + (port / 'vulkan_download_batch.inc').read_text() + '\n'),
     (gc_original, gc),
     # RADV reports all Vulkan allocations, not just cached textures. A game's
@@ -1036,7 +1495,7 @@ adapt('src/video_core/texture_cache/texture_cache.h',
     # critical threshold and minimum 1 GiB spacing. OpenGL remains unchanged.
     ('const s64 min_vacancy_expected = (6 * mem_threshold) / 10;',
      'const s64 min_vacancy_expected =\n            ((std::is_same_v<Runtime, Vulkan::TextureCacheRuntime> ? 4 : 6) * mem_threshold) / 10;'),
-] + texture_costs)
+] + texture_costs + texture_partial + texture_layers + texture_decode_handoff + texture_astc_policy)
 
 # The four calls inside bind_geometry and the three inside bind_update. They sit in buffer_cache.h
 # rather than in Configure, and both spend their time in SynchronizeBuffer's page walk over the
@@ -1215,6 +1674,104 @@ shader_costs = [
      '                    unsigned(dynamic_features.has_extended_dynamic_state_3_enables),\n'
      '                    unsigned(dynamic_features.has_dynamic_vertex_input));\n'
      '}\n\nPipelineCache::~PipelineCache()'),
+    # Static vertex input (no attribute) for pipelines whose vertex shader reads no vertex attribute
+    # (dev_vulkan.h static_vertex_input): with VK_EXT_vertex_input_dynamic_state the console's
+    # driver drew them wrong (a full-screen triangle from the vertex index covering a game's
+    # cutscenes with a flat colour). Building a pipeline records whether its vertex shader reads
+    # attributes; the static key has no attribute, so the disk cache keeps loading it.
+    ('#include "video_core/engines/maxwell_3d.h"',
+     '#include "video_core/engines/maxwell_3d.h"\n#include "video_core/dirty_flags.h"\n'
+     '#include <atomic>\n#include <mutex>\n#include <set>\n#include <unordered_set>\n'
+     '#include "video_core/renderer_vulkan/vk_state_tracker.h"'),
+    ('GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {',
+     """namespace {
+std::mutex eden_attributeless_mutex;
+using EdenVertexIdentity = std::array<u64, 2>;
+std::set<EdenVertexIdentity> eden_attributeless_vertex;
+std::atomic<u32> eden_attributeless_generation{0};
+bool eden_static_vertex_input_bound = false;
+
+void EdenRecordAttributeless(EdenVertexIdentity vertex_hash, const Shader::Info& info) {
+    for (size_t index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+        if (info.loads.Generic(index)) {
+            return;
+        }
+    }
+    std::scoped_lock lock{eden_attributeless_mutex};
+    if (eden_attributeless_vertex.insert(vertex_hash).second) {
+        eden_attributeless_generation.fetch_add(1, std::memory_order_release);
+    }
+}
+
+// GPU thread: whether the vertex shader reads no attribute, as far as built pipelines tell.
+bool EdenAttributeless(EdenVertexIdentity vertex_hash) {
+    static EdenVertexIdentity last_hash{};
+    static u32 last_generation = ~0u;
+    static bool last_result = false;
+    const u32 generation = eden_attributeless_generation.load(std::memory_order_acquire);
+    if (vertex_hash != last_hash || generation != last_generation) {
+        std::scoped_lock lock{eden_attributeless_mutex};
+        last_hash = vertex_hash;
+        last_generation = generation;
+        last_result = eden_attributeless_vertex.contains(vertex_hash);
+    }
+    return last_result;
+}
+
+// A static key without attributes (what the loader takes back from the disk cache).
+bool EdenAttributelessStaticKey(const FixedPipelineState& state) {
+    return state.dynamic_vertex_input == 0 &&
+           std::ranges::none_of(state.attributes,
+                                [](const auto& attribute) { return attribute.raw != 0; });
+}
+} // Anonymous namespace
+
+GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {"""),
+    ('    graphics_key.state.Refresh(*maxwell3d, dynamic_features);\n',
+     """    graphics_key.state.Refresh(*maxwell3d, dynamic_features);
+    const bool static_vertex_input = graphics_key.state.dynamic_vertex_input != 0 &&
+                                     ::Eden::DevVulkan::static_vertex_input &&
+                                     EdenAttributeless({graphics_key.unique_hashes[0], graphics_key.unique_hashes[1]});
+    if (static_vertex_input) {
+        // Instance-rate streams as the registers set them (with every stream per vertex the
+        // driver drew these wrong too); no attribute, so the key does not depend on what the
+        // registers hold for attributes the shader does not read.
+        const auto& regs = maxwell3d->regs;
+        graphics_key.state.dynamic_vertex_input.Assign(0);
+        graphics_key.state.enabled_divisors = 0;
+        graphics_key.state.attributes = {};
+        graphics_key.state.binding_divisors = {};
+        for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+            const bool is_enabled = regs.vertex_stream_instances.IsInstancingEnabled(index);
+            graphics_key.state.binding_divisors[index] =
+                is_enabled ? regs.vertex_streams[index].frequency : 0;
+            graphics_key.state.enabled_divisors |= (is_enabled ? u64{1} : 0) << index;
+        }
+        // The union's attribute_types now holds divisors: the next dynamic draw recomputes them
+        // and sets its vertex input again (a static pipeline replaced it).
+        maxwell3d->dirty.flags[Dirty::VertexInput] = true;
+    }
+    if (static_vertex_input && !eden_static_vertex_input_bound) {
+        // Rebind the vertex buffers with their strides, dynamic state of the static pipeline.
+        auto& flags = maxwell3d->dirty.flags;
+        flags[VideoCommon::Dirty::VertexBuffers] = true;
+        for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+            flags[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+        }
+    }
+    eden_static_vertex_input_bound = static_vertex_input;
+"""),
+    ('            (key.state.dynamic_vertex_input != 0) !=\n                dynamic_features.has_dynamic_vertex_input) {',
+     '            ((key.state.dynamic_vertex_input != 0) !=\n'
+     '                 dynamic_features.has_dynamic_vertex_input &&\n'
+     '             !(dynamic_features.has_dynamic_vertex_input &&\n'
+     '               ::Eden::DevVulkan::static_vertex_input &&\n'
+     '               EdenAttributelessStaticKey(key.state)))) {'),
+    ('    std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};\n',
+     '    if (uses_vertex_b) {\n'
+     '        EdenRecordAttributeless({key.unique_hashes[0], key.unique_hashes[1]}, programs[1].info);\n'
+     '    }\n'
+     '    std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};\n'),
 ]
 # Time both graphics and compute preparation, without modifying the compiler or
 # reading guest state on another thread. These intervals overlap shader_prepare.
@@ -1260,6 +1817,135 @@ for old, new in shader_costs:
         new = ('    if (is_new) {\n        pipeline = CreateComputePipeline(key, shader);\n    }\n' + trace)
     if shader_source.count(old) != 1:
         raise RuntimeError(f'Shader pipeline anchor changed: {old[:60]}')
+    shader_source = shader_source.replace(old, new)
+# The driver's pipeline cache file (vulkan_pipelines.bin). Eden rewrote it in place (the source
+# now writes a temporary file and renames it; this keeps a failed copy from removing the cache): opening it
+# emptied it, and a large game's cache takes seconds to write, so a session that ended during the
+# write (the ten-second limit on leaving a game, a crash, rest mode) left it empty or cut off, and
+# every pipeline was compiled again at the next start (ProsperoEden #170). It is now written beside the old
+# file and renamed over it once whole, and leaving a game rewrites it only when pipelines were
+# added since it was last written.
+# The anchors include the timer the cost patches above add to the function.
+pipeline_cache_writes = [
+    ('PipelineCache::~PipelineCache() {\n'
+     '    if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {\n'
+     '        SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,\n'
+     '                                     CACHE_VERSION);\n'
+     '    }\n'
+     '}\n',
+     'PipelineCache::~PipelineCache() {\n'
+     '    if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {\n'
+     '        // A flush still being written would race this one for the same file.\n'
+     '        serialization_thread.WaitForRequests();\n'
+     '        // Written after the game loaded and at each flush: with no pipeline added since,\n'
+     '        // the file already holds everything, and writing it again only delays leaving.\n'
+     '        const bool written = last_flush.time_since_epoch().count() != 0;\n'
+     '        if (!written || pipelines_since_flush != 0) {\n'
+     '            SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,\n'
+     '                                         CACHE_VERSION);\n'
+     '        }\n'
+     '    }\n'
+     '}\n'),
+    ('''void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+                                                 const vk::PipelineCache& pipeline_cache,
+                                                 u32 cache_version) try {
+    auto timer = Eden::Performance::VulkanTimer(18);
+    // Written beside the cache and renamed over it: the emulator stopped mid-write left the cache
+    // empty, and every later boot failed to read it.
+    auto temporary = filename;
+    temporary += ".tmp";
+    std::ofstream file(temporary, std::ios::binary);
+    file.exceptions(std::ifstream::failbit);
+    if (!file.is_open()) {
+        LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
+                  Common::FS::PathToUTF8String(filename));
+        return;
+    }
+    file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
+        .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version));
+
+    size_t cache_size = 0;
+    std::vector<char> cache_data;
+    if (pipeline_cache) {
+        pipeline_cache.Read(&cache_size, nullptr);
+        cache_data.resize(cache_size);
+        pipeline_cache.Read(&cache_size, cache_data.data());
+    }
+    file.write(cache_data.data(), cache_size);
+    file.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, filename, error);
+    if (error) {
+        LOG_ERROR(Common_Filesystem, "Failed to replace Vulkan driver pipeline cache file {}: {}",
+                  Common::FS::PathToUTF8String(filename), error.message());
+        std::filesystem::remove(temporary, error);
+        return;
+    }
+
+    LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
+             Common::FS::PathToUTF8String(filename));
+
+} catch (const std::ios_base::failure& e) {
+    LOG_ERROR(Common_Filesystem, "{}", e.what());
+    if (!Common::FS::RemoveFile(filename)) {
+        LOG_ERROR(Common_Filesystem, "Failed to delete Vulkan driver pipeline cache file {}",
+                  Common::FS::PathToUTF8String(filename));
+    }
+}
+''',
+'''void PipelineCache::SerializeVulkanPipelineCache(const std::filesystem::path& filename,
+                                                 const vk::PipelineCache& pipeline_cache,
+                                                 u32 cache_version) {
+    auto timer = Eden::Performance::VulkanTimer(18);  // as the port times the write it replaces
+    // Written whole beside the cache, then renamed over it: until the rename the previous cache
+    // stays as it was, and a write that fails or is cut short leaves it alone.
+    auto partial = filename;
+    partial += ".part";
+    std::error_code error;
+    try {
+        size_t cache_size = 0;
+        std::vector<char> cache_data;
+        if (pipeline_cache) {
+            pipeline_cache.Read(&cache_size, nullptr);
+            cache_data.resize(cache_size);
+            pipeline_cache.Read(&cache_size, cache_data.data());
+        }
+        {
+            std::ofstream file(partial, std::ios::binary | std::ios::trunc);
+            if (!file.is_open()) {
+                LOG_ERROR(Common_Filesystem, "Failed to open Vulkan driver pipeline cache file {}",
+                          Common::FS::PathToUTF8String(partial));
+                return;
+            }
+            file.exceptions(std::ofstream::failbit | std::ofstream::badbit);
+            file.write(VULKAN_CACHE_MAGIC_NUMBER.data(), VULKAN_CACHE_MAGIC_NUMBER.size())
+                .write(reinterpret_cast<const char*>(&cache_version), sizeof(cache_version))
+                .write(cache_data.data(), static_cast<std::streamsize>(cache_size));
+            file.flush();
+        }
+        std::filesystem::rename(partial, filename, error);
+        if (error) {
+            LOG_ERROR(Common_Filesystem, "Failed to replace Vulkan driver pipeline cache file {}: {}",
+                      Common::FS::PathToUTF8String(filename), error.message());
+            std::filesystem::remove(partial, error);
+            return;
+        }
+        LOG_INFO(Render_Vulkan, "Vulkan driver pipelines cached at: {}",
+                 Common::FS::PathToUTF8String(filename));
+    } catch (const std::ios_base::failure& e) {
+        LOG_ERROR(Common_Filesystem, "{}", e.what());
+        std::filesystem::remove(partial, error);
+    } catch (const std::bad_alloc&) {
+        // A copy of a large cache did not fit in memory: keep the one on disk.
+        LOG_ERROR(Render_Vulkan, "No memory to copy the Vulkan driver pipeline cache; kept the previous file");
+        std::filesystem::remove(partial, error);
+    }
+}
+'''),
+]
+for old, new in pipeline_cache_writes:
+    if shader_source.count(old) != 1:
+        raise RuntimeError(f'Pipeline cache write anchor changed: {old[:60]}')
     shader_source = shader_source.replace(old, new)
 shader_output = output / 'vk_pipeline_cache_cost.cpp'
 if not shader_output.exists() or shader_output.read_text() != shader_source:
@@ -1328,6 +2014,40 @@ probes = {
         # wait is safe (unlike a wait inside an arbitrary staging-buffer allocation).
         ('        .image = memory_allocator.CreateImage(VkImageCreateInfo{\n            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,',
          '        .image = memory_allocator.CreateTemporaryImage(VkImageCreateInfo{\n            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,'),
+        # An ASTC-to-BC transcode decodes into an RGBA copy (4 bytes a pixel, every level) that
+        # lives until the GPU has used it. A course load makes hundreds in a frame, which held
+        # 6.7 GB of the pool the console's GPU shares with the CPU (ProsperoEden). So the copies in
+        # flight are bounded, always: by bytes (256 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB),
+        # waiting for the oldest copy only, and what is recorded is submitted every 32 MiB, so the
+        # GPU works through the copies while more are recorded and the oldest is usually done
+        # before the bound is reached. The tighter bound below still applies while memory is short.
+        ('    PendingTranscode pending{\n        .tick = 0,\n        .bytes = decode_bytes,\n',
+         '    {\n'
+         '        using namespace Common::Literals;\n'
+         '        static const u64 held_limit = [] {\n'
+         '            const char* value = std::getenv("EDEN_PS5_TRANSCODE_PENDING_MIB");\n'
+         '            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{256_MiB};\n'
+         '        }();\n'
+         '        while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {\n'
+         '            pending_transcodes.pop_front();\n'
+         '        }\n'
+         '        u64 held_bytes = 0, recorded_bytes = 0;\n'
+         '        for (const PendingTranscode& held : pending_transcodes) {\n'
+         '            held_bytes += held.bytes;\n'
+         '            recorded_bytes += held.tick >= scheduler.CurrentTick() ? held.bytes : 0;\n'
+         '        }\n'
+         '        if (recorded_bytes >= 32_MiB) {\n'
+         '            scheduler.Flush();\n'
+         '        }\n'
+         '        while (!pending_transcodes.empty() && held_bytes + decode_bytes > held_limit) {\n'
+         '            scheduler.Wait(pending_transcodes.front().tick);\n'
+         '            while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {\n'
+         '                held_bytes -= pending_transcodes.front().bytes;\n'
+         '                pending_transcodes.pop_front();\n'
+         '            }\n'
+         '        }\n'
+         '    }\n'
+         '    PendingTranscode pending{\n        .tick = 0,\n        .bytes = decode_bytes,\n'),
         # A full GPU wait per texture was 5% of the split's back thread at Mario Kart World's
         # title (one streamed texture a frame, the pool always short): the decode images are now
         # reclaimed once the ones in flight exceed EDEN_PS5_TRANSCODE_PENDING_MIB (64), waiting

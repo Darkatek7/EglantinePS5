@@ -51,6 +51,15 @@ target_include_directories(dynarmic BEFORE PRIVATE "${PORT_BUILD_DIR}/jit-checks
 # Let the existing compiler inline across the JIT's translation units. Keep the
 # rest of the native application on its qualified non-LTO build path.
 target_compile_options(dynarmic PRIVATE -flto=thin)
+if(PS5_NATIVE)
+    # The GPU thread's per-draw work (command processing, buffer/texture caches) spans
+    # video_core's translation units, and the console's CPU is a Zen 2 (AVX2, BMI2, LZCNT/TZCNT).
+    # Not common or core: with them a title never reached its first frame (their fiber switches
+    # move guest threads between host threads, which cross-unit inlining may not survive).
+    # EDEN_CPU_PRESET=zen2 (ps5.cmake) passes the same -march to every target; repeated here it
+    # changes nothing.
+    target_compile_options(video_core PRIVATE -flto=thin -march=znver2)
+endif()
 if(NOT PS5_NATIVE)
     target_link_options(dynarmic INTERFACE -fuse-ld=lld-18)
 endif()
@@ -934,6 +943,35 @@ write_derived("${PORT_BUILD_DIR}/physical_core.cpp"
     "#include \"${EDEN_PORT_DIR}/guest_fault.h\"\n#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n${physical_core_source}")
 list(REMOVE_ITEM core_sources "hle/kernel/physical_core.cpp")
 list(APPEND core_sources "${PORT_BUILD_DIR}/physical_core.cpp")
+# Frame pacing (backported from ProsperoEden): the guest's tick counter gives when a frame is a
+# little late (headless/guest_clock.h, dev-settings guest_clock=off). Its rate is applied where
+# Eden applies its own clock settings (CoreTiming::GetClockTicks), and it follows the frames the
+# game hands in (BufferQueueProducer::QueueBuffer, below).
+file(READ "${PROJECT_SOURCE_DIR}/src/core/core_timing.cpp" core_timing_source)
+set(guest_clock_old "    if (::Settings::values.sync_core_speed.GetValue()) {")
+string(FIND "${core_timing_source}" "${guest_clock_old}" guest_clock_at)
+if(guest_clock_at LESS 0)
+    message(FATAL_ERROR "Pinned CoreTiming::GetClockTicks changed")
+endif()
+string(REPLACE "${guest_clock_old}"
+    "    fres = ::Eden::GuestClock::Scale(fres);\n${guest_clock_old}"
+    core_timing_source "${core_timing_source}")
+write_derived("${PORT_BUILD_DIR}/core_timing.cpp" "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n${core_timing_source}")
+list(REMOVE_ITEM core_sources "core_timing.cpp")
+list(APPEND core_sources "${PORT_BUILD_DIR}/core_timing.cpp")
+file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
+set(queue_old "    input.Deflate(&timestamp, &is_auto_timestamp, &crop, &scaling_mode, &transform, &sticky_transform_, &async, &swap_interval, &fence);")
+string(FIND "${producer_source}" "${queue_old}" queue_at)
+if(queue_at LESS 0)
+    message(FATAL_ERROR "Pinned buffer queue hand-off changed")
+endif()
+string(REPLACE "${queue_old}" "${queue_old}\n    ::Eden::GuestClock::FrameQueued(swap_interval);" producer_source "${producer_source}")
+# (A development build adds its counters to the same source and writes it below.)
+if(NOT EDEN_DEV_PROFILE)
+    write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n${producer_source}")
+    list(REMOVE_ITEM core_sources "hle/service/nvnflinger/buffer_queue_producer.cpp")
+    list(APPEND core_sources "${PORT_BUILD_DIR}/buffer_queue_producer.cpp")
+endif()
 if(EDEN_DEV_PROFILE)
     # Guest-visible waits: syncpoint event registration to signal (GPU-pipeline latency
     # the game waits on) and buffer-queue dequeue waits (presentation back-pressure).
@@ -947,14 +985,13 @@ if(EDEN_DEV_PROFILE)
     write_derived("${PORT_BUILD_DIR}/nvhost_ctrl.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${ctrl_source}")
     list(REMOVE_ITEM core_sources "hle/service/nvdrv/devices/nvhost_ctrl.cpp")
     list(APPEND core_sources "${PORT_BUILD_DIR}/nvhost_ctrl.cpp")
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
     set(producer_old "        Status status = WaitForFreeSlotThenRelock(async, &found, &return_flags, lock);")
     string(FIND "${producer_source}" "${producer_old}" producer_at)
     if(producer_at LESS 0)
         message(FATAL_ERROR "Pinned buffer queue dequeue changed")
     endif()
     string(REPLACE "${producer_old}" "        const auto dequeue_start = ::Eden::Performance::NowNs();\n${producer_old}\n        ::Eden::Performance::AddSince(::Eden::Performance::guest_dequeue_wait, dequeue_start);" producer_source "${producer_source}")
-    write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${producer_source}")
+    write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n#include \"${EDEN_PORT_DIR}/performance.h\"\n${producer_source}")
     list(REMOVE_ITEM core_sources "hle/service/nvnflinger/buffer_queue_producer.cpp")
     list(APPEND core_sources "${PORT_BUILD_DIR}/buffer_queue_producer.cpp")
     # Guest asset streaming: time and bytes of fsp-srv IFile/IStorage backend reads.
@@ -1056,6 +1093,17 @@ if(unmap_at LESS 0)
 endif()
 string(REPLACE "${unmap_old}" "            if (const auto mirror = page_table.entries.mirror_index; mirror != 0)\n                page_table.entries.ZeroRegion(base + mirror, end + mirror);\n${unmap_old}"
     arena_source "${arena_source}")
+# The guest core a tracked write comes from, for the GPU caches' deferred writes (performance.h
+# cpu_write_defer): each core queues its own, and a replayed write to GPU-modified data goes to
+# that core's dirty ranges.
+set(tracked_old "        system.Host1x().MemoryManager().ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {\n            auto& current_area = rasterizer_write_areas[core];\n")
+string(FIND "${arena_source}" "${tracked_old}" tracked_at)
+if(tracked_at LESS 0)
+    message(FATAL_ERROR "Pinned HandleRasterizerWrite changed")
+endif()
+string(REPLACE "${tracked_old}" "        ::Eden::Performance::cpu_write_core = static_cast<unsigned>(core);\n${tracked_old}"
+    arena_source "${arena_source}")
+string(PREPEND arena_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n")
 if(EDEN_A32_FASTMEM)
     # The window spans 4 GiB: only 32-bit applications get it as their fastmem arena.
     set(arena_old "        if (process.IsApplication() && Settings::IsFastmemEnabled()) {")
@@ -1428,7 +1476,30 @@ set_property(TARGET core PROPERTY SOURCES "${core_sources}")
 # published for the renderer: frames a display has no refresh for are not presented
 # (headless/display_refresh.h).
 file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/vi/conductor.cpp" conductor_source)
-string(PREPEND conductor_source "#include \"${EDEN_PORT_DIR}/display_refresh.h\"\n")
+# Vsync composition delay (every build, multicore; performance.h compose_delay_us; backported
+# from ProsperoEden): signal the guest vsync first and compose later, so a frame the game queues
+# in response to the vsync is latched at that same vsync.
+set(compose_old "    for (auto& [display_id, manager] : m_vsync_managers) {
+        m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
+        manager.SignalVsync(m_system.Kernel());
+    }")
+string(FIND "${conductor_source}" "${compose_old}" compose_at)
+if(compose_at LESS 0)
+    message(FATAL_ERROR "Pinned VI conductor composition loop changed")
+endif()
+string(REPLACE "${compose_old}" "    if (const int compose_delay = ::Eden::Performance::compose_delay_us.load(std::memory_order_relaxed);
+        compose_delay > 0 && m_system.IsMulticore()) {
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            manager.SignalVsync(m_system.Kernel());
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(compose_delay));
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
+        }
+        return;
+    }
+${compose_old}" conductor_source "${conductor_source}")
+string(PREPEND conductor_source "#include \"${EDEN_PORT_DIR}/display_refresh.h\"\n#include <thread>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n")
 eden_patch(conductor_source
     "    const f32 effective_fps = 60.f / static_cast<f32>(m_swap_interval);\n    return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));"
     "    const f32 effective_fps = 60.f / static_cast<f32>(m_swap_interval);\n    ::Eden::Display::game_millihertz.store(static_cast<int>(effective_fps * 1000.f / speed_scale),\n                                           std::memory_order_relaxed);\n    return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));")
@@ -2391,6 +2462,77 @@ if(EDEN_PS5_OPENGL)
         string(REPLACE "        sync_cv.wait(lk, [this]() { return synced; });"
             "        while (!synced && !system.IsShuttingDown())\n            sync_cv.wait_for(lk, std::chrono::milliseconds(10));\n        if (system.IsShuttingDown()) return false;" command_source "${command_source}")
         string(REPLACE "    while (word != value) {" "    while (word != value && !dma_pusher.system.IsShuttingDown()) {" command_source "${command_source}")
+        if(unit STREQUAL "dma_pusher")
+            # Guest writes queued while a cache lock was held (performance.h cpu_write_defer) reach the
+            # caches before the GPU thread runs work submitted after them (FlushCaching runs the queue).
+            # With Eglantine's split the caches and the invalidation accumulator FlushCaching empties
+            # belong to the back thread (gpu_split.h): it runs there, in order with the methods.
+            set(dispatch_old "void DmaPusher::DispatchCalls() {\n")
+            string(FIND "${command_source}" "${dispatch_old}" dispatch_at)
+            if(dispatch_at LESS 0)
+                message(FATAL_ERROR "Pinned DmaPusher::DispatchCalls changed")
+            endif()
+            string(REPLACE "${dispatch_old}" [=[void DmaPusher::DispatchCalls() {
+    if (::Eden::Performance::gpu_dirty_pending.load(std::memory_order_relaxed)) {
+        if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+            split.Defer([memory = &memory_manager] { memory->FlushCaching(); });
+        } else {
+            memory_manager.FlushCaching();
+        }
+    }
+]=] command_source "${command_source}")
+            # Incrementing runs of store-only registers go to the engine's method sink in one pass
+            # (performance.h dma_batch); the first word that starts engine work, the puller's
+            # methods, increase-once writes and engines missing from the subchannel stay per word.
+            # Not with Eglantine's split: the sink belongs to its back thread and the words go through
+            # its ring (and the front's register copy, which its macros read) like any other.
+            set(dma_word [=[        } else if (dma_state.method_count) {
+            auto const command_header = commands[index]; //can copy
+]=])
+            string(FIND "${command_source}" "${dma_word}" dma_word_at)
+            if(dma_word_at LESS 0)
+                message(FATAL_ERROR "Pinned DmaPusher::ProcessCommands changed")
+            endif()
+            if(EDEN_DEV_PROFILE)
+                set(dma_count_run [=[
+                    ::Eden::Performance::dma_batch_runs.store(::Eden::Performance::dma_batch_runs.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+                    ::Eden::Performance::dma_batch_words.store(::Eden::Performance::dma_batch_words.load(std::memory_order_relaxed) + run, std::memory_order_relaxed);]=])
+                set(dma_count_word [=[
+            ::Eden::Performance::dma_single_words.store(::Eden::Performance::dma_single_words.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);]=])
+            else()
+                set(dma_count_run "")
+                set(dma_count_word "")
+            endif()
+            string(REPLACE "${dma_word}" "        } else if (dma_state.method_count) {
+            if (!dma_increment_once && dma_state.method >= non_puller_methods &&
+                ::Eden::Performance::dma_batch.load(std::memory_order_relaxed) &&
+                !VideoCommon::GpuSplit::Get().Active()) {
+                auto* const engine = subchannels[dma_state.subchannel];
+                if (engine) {
+                    const auto& mask = engine->execution_mask;
+                    const u32 available = u32(std::min<std::size_t>(dma_state.method_count, commands.size() - index));
+                    const u32 limit = dma_state.method < mask.size()
+                        ? u32(std::min<std::size_t>(available, mask.size() - dma_state.method)) : 0;
+                    u32 run = 0;
+                    while (run < limit && !mask[dma_state.method + run])
+                        ++run;
+                    if (run != 0) {
+                        auto& sink = engine->method_sink;
+                        for (u32 i = 0; i < run; ++i)
+                            sink.emplace_back(dma_state.method + i, commands[index + i].argument);
+                        dma_state.method += run;
+                        dma_state.method_count -= run;
+                        index += run;
+${dma_count_run}
+                        continue;
+                    }
+                }
+            }
+${dma_count_word}
+            auto const command_header = commands[index]; //can copy
+" command_source "${command_source}")
+            string(PREPEND command_source "#include <atomic>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n")
+        endif()
         string(PREPEND command_source "#include <chrono>\n")
         string(REPLACE "/" "_" unit_name "${unit}")
         write_derived("${PORT_BUILD_DIR}/${unit_name}.cpp" "${command_source}")
@@ -2417,6 +2559,43 @@ if(EDEN_PS5_OPENGL)
 endif()
 write_derived("${PORT_BUILD_DIR}/gpu.cpp" "${gpu_source}")
 list(APPEND video_sources "${PORT_BUILD_DIR}/gpu.cpp")
+# Guest writes queued while a cache lock was held (performance.h cpu_write_defer) run before the next
+# draw, clear, dispatch or engine copy: the GPU thread calls FlushCaching first in each, so the caches
+# see them no later than had the guest waited for the lock. A replayed write waits for a lock a guest
+# holds (deferred_replay) instead of being queued again behind the work it must precede.
+file(READ "${PROJECT_SOURCE_DIR}/src/video_core/memory_manager.cpp" gpu_memory_source)
+set(flush_caching_old "void MemoryManager::FlushCaching() {\n")
+string(FIND "${gpu_memory_source}" "${flush_caching_old}" flush_caching_at)
+if(flush_caching_at LESS 0)
+    message(FATAL_ERROR "Pinned MemoryManager::FlushCaching changed")
+endif()
+string(REPLACE "#include \"memory_manager.h\"\n" "" gpu_memory_source "${gpu_memory_source}")
+string(REPLACE "${flush_caching_old}" [=[void MemoryManager::FlushCaching() {
+    if (rasterizer != nullptr && ::Eden::Performance::gpu_dirty_pending.load(std::memory_order_relaxed) &&
+        ::Eden::Performance::gpu_dirty_pending.exchange(false, std::memory_order_acq_rel)) {
+        ::Eden::Performance::gpu_dirty_replays.fetch_add(1, std::memory_order_relaxed);
+        ::Eden::Performance::deferred_replay = true;
+        SCOPE_EXIT { ::Eden::Performance::deferred_replay = false; };
+        for (unsigned core = 0; core < ::Eden::Performance::kGuestCores; ++core) {
+            for (const auto& write : ::Eden::Performance::TakeDeferredWrites(core)) {
+                if (rasterizer->OnCPUWrite(write.address, write.end - write.address)) {
+                    // Collect represents 32 x 64-byte blocks, not an entire device page.
+                    constexpr u64 region_size = 1ULL << (Core::DEVICE_PAGEBITS - 1);
+                    for (u64 address = write.address; address < write.end;) {
+                        const u64 size = std::min<u64>(write.end - address,
+                                                  region_size - (address & (region_size - 1)));
+                        system.GetGPUDirtyMemoryManager()[core].Collect(address, size);
+                        address += size;
+                    }
+                }
+            }
+        }
+    }
+]=] gpu_memory_source "${gpu_memory_source}")
+write_derived("${PORT_BUILD_DIR}/memory_manager.cpp"
+    "#include <atomic>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"common/scope_exit.h\"\n#include \"core/core.h\"\n#include \"core/gpu_dirty_memory_manager.h\"\n${gpu_memory_source}")
+list(REMOVE_ITEM video_sources memory_manager.cpp)
+list(APPEND video_sources "${PORT_BUILD_DIR}/memory_manager.cpp")
 if(EDEN_DEV_PROFILE)
     # Render-enable evaluations per mode and result (EDEN_DEV_GUEST cond=), to tell GPU
     # render conditions apart from the game's own LOD choices (LOD swaps).
@@ -2454,6 +2633,47 @@ write_derived("${PORT_BUILD_DIR}/shader_environment.cpp"
     "${shader_environment_head}#include \"${EDEN_PORT_DIR}/shader_cache_reader.inc\"\n\n${shader_environment_tail}")
 set_property(SOURCE "${PORT_BUILD_DIR}/shader_environment.cpp" APPEND PROPERTY OBJECT_DEPENDS
     "${EDEN_PORT_DIR}/shader_cache_reader.inc")
+# Eden recompresses an ASTC texture to BC1 or BC3 a mip level at a time: every layer of the level
+# is decoded into one buffer, four bytes a pixel, and then compressed. For a texture array of 121
+# layers that buffer is 484 MiB, asked of the pool the CPU shares with the GPU at the moment a game
+# loads new textures (a ProsperoEden session ended there with the pool at 620 MiB in one piece),
+# and the heap keeps what it grew by. A layer at a time needs 4 MiB and writes the same bytes: both
+# steps already work layer by layer, each layer at its own offset.
+file(READ "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/util.cpp" texture_util_source)
+set(recompress_old [=[            decode_scratch.resize_destructive(level_size);
+
+            Tegra::Texture::ASTC::Decompress(
+                input_offset, copy.image_extent.width, copy.image_extent.height,
+                copy.image_subresource.num_layers * copy.image_extent.depth, tile_size.width,
+                tile_size.height, decode_scratch);
+
+            compress(decode_scratch, copy.image_extent.width, copy.image_extent.height,
+                     copy.image_subresource.num_layers * copy.image_extent.depth,
+                     output.subspan(output_offset));
+]=])
+string(FIND "${texture_util_source}" "${recompress_old}" recompress_at)
+if(recompress_at LESS 0)
+    message(FATAL_ERROR "Pinned ASTC recompression changed (texture_cache/util.cpp, ConvertImage)")
+endif()
+string(REPLACE "${recompress_old}" [=[            // A layer at a time (headless/CMakeLists.txt): ASTC blocks are 16 bytes, BC blocks
+            // cover 4x4 pixels.
+            const u32 layers = copy.image_subresource.num_layers * copy.image_extent.depth;
+            const u32 layer_input = Common::DivideUp(copy.image_extent.width, tile_size.width) *
+                                    Common::DivideUp(copy.image_extent.height, tile_size.height) * 16;
+            const u32 layer_output = Common::AlignUp(copy.image_extent.width, 4) *
+                                     Common::AlignUp(copy.image_extent.height, 4) / bpp_div;
+            decode_scratch.resize_destructive(level_size / (std::max)(layers, 1u));
+            for (u32 layer = 0; layer < layers; ++layer) {
+                Tegra::Texture::ASTC::Decompress(
+                    input_offset.subspan(layer * layer_input), copy.image_extent.width,
+                    copy.image_extent.height, 1, tile_size.width, tile_size.height, decode_scratch);
+                compress(decode_scratch, copy.image_extent.width, copy.image_extent.height, 1,
+                         output.subspan(output_offset + layer * layer_output));
+            }
+]=] texture_util_source "${texture_util_source}")
+write_derived("${PORT_BUILD_DIR}/texture_cache_util.cpp" "${texture_util_source}")
+list(REMOVE_ITEM video_sources texture_cache/util.cpp)
+list(APPEND video_sources "${PORT_BUILD_DIR}/texture_cache_util.cpp")
 list(REMOVE_ITEM video_sources shader_environment.cpp)
 list(APPEND video_sources "${PORT_BUILD_DIR}/shader_environment.cpp")
 include("${EDEN_PORT_DIR}/macro_native.cmake")
