@@ -1193,6 +1193,8 @@ void PackPass(SparseRange& range, std::size_t slots, std::vector<std::size_t>& c
         pack_scratch.resize(static_cast<std::size_t>(LZ4_compressBound(static_cast<int>(SparseSlot))));
     }
     if (pack_refused.load(std::memory_order_relaxed) || !PoolShortForPacking()) return;
+    // Device memory nothing is bound to goes back before any guest memory is packed.
+    if (&eden_radv_private_radv_ps5_eden_trim != nullptr) (void)eden_radv_private_radv_ps5_eden_trim(std::uint64_t{512} << 20);
     // Coldest first, each needing ColdSeconds << (times packed) unwritten.
     const std::uint32_t now = ColdNow();
     std::vector<std::size_t>& ready = pack_ready;
@@ -1586,15 +1588,22 @@ namespace {
 std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept {
 #ifdef PS5_NATIVE
     SparseRange* const range = service_range.load(std::memory_order_acquire);
-    if (range == nullptr || !PackEnabled() || pack_refused.load(std::memory_order_relaxed) || holding_pack) return 0;
+    // Device memory no resource uses goes back first: it costs nothing later (packing makes the
+    // guest fault its data back).
+    std::size_t trimmed = 0;
+    if (&eden_radv_private_radv_ps5_eden_trim != nullptr)
+        trimmed = static_cast<std::size_t>(eden_radv_private_radv_ps5_eden_trim(bytes));
+    if (trimmed >= bytes) return trimmed;
+    bytes -= trimmed;
+    if (range == nullptr || !PackEnabled() || pack_refused.load(std::memory_order_relaxed) || holding_pack) return trimmed;
     std::unique_lock pack_lock{pack_mutex, std::defer_lock};
     if (wait) pack_lock.lock();
-    else if (!pack_lock.try_lock()) return 0;
+    else if (!pack_lock.try_lock()) return trimmed;
     holding_pack = true;
     struct Held { ~Held() { holding_pack = false; } } held;
     if (packed_slots.load(std::memory_order_acquire) == nullptr || cold_since.empty() ||
         recover_order.capacity() < cold_since.size())
-        return 0;
+        return trimmed;
     const std::uint32_t now = ColdNow();
     recover_order.clear();
     for (std::size_t slot = 0; slot < cold_since.size(); ++slot)
@@ -1618,7 +1627,7 @@ std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept {
                                           wait ? "" : "_try", bytes >> 20, freed >> 20);
         if (length > 0) Report(line);
     }
-    return freed;
+    return trimmed + freed;
 #else
     (void)bytes;
     (void)wait;
