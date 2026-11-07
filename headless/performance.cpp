@@ -388,6 +388,9 @@ extern "C" std::size_t eden_heap_large_held(unsigned* blocks) __attribute__((wea
 extern "C" std::size_t eden_heap_trim(void) __attribute__((weak));
 extern "C" void eden_heap_sites_report(void) __attribute__((weak));
 extern "C" void eden_heap_usage(std::size_t* held, std::size_t* in_use, std::size_t* returned) __attribute__((weak));
+extern "C" void eden_heap_slack(std::size_t*, std::size_t*, unsigned*, unsigned*) __attribute__((weak));
+extern "C" std::size_t eden_heap_arena_live __attribute__((weak));
+extern "C" unsigned eden_heap_arena_empty __attribute__((weak)), eden_heap_arena_quarter __attribute__((weak));
 extern "C" unsigned eden_guest_memory_wanted(void) __attribute__((weak));
 extern "C" void eden_guest_memory_reserve(std::size_t* held, std::size_t* target) __attribute__((weak));
 #ifdef PS5_NATIVE
@@ -483,6 +486,15 @@ void ReportHeap(const char* why) {
     std::fprintf(stderr, "[EglantinePS5] heap: holds %zu MiB (%zu MiB of pieces, %zu MiB in %u large blocks), "
                          "%zu MiB of it in use; %zu MiB given back so far (%s)\n",
                  held >> 20, (held - large) >> 20, large >> 20, large_blocks, in_use >> 20, returned >> 20, why);
+    if (eden_heap_slack) {
+        std::size_t tcache = 0, arenas = 0;
+        unsigned holders = 0, arena_count = 0;
+        eden_heap_slack(&tcache, &arenas, &holders, &arena_count);
+        std::fprintf(stderr, "EDEN_HEAP_SLACK tcache=%zuMiB arenas=%u (%zuMiB, %u threads; live %zuMiB, %u empty, %u under a quarter) spaces_outside_arenas=%zuMiB\n",
+                     tcache >> 20, arena_count, arenas >> 20, holders, eden_heap_arena_live >> 20,
+                     eden_heap_arena_empty, eden_heap_arena_quarter,
+                     ((held - large) > arenas ? (held - large) - arenas : 0) >> 20);
+    }
     if (eden_heap_sites_report) eden_heap_sites_report();
 }
 
