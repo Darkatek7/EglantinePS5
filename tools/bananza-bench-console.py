@@ -184,6 +184,7 @@ class Bench(nir.Console):
                 raise RuntimeError('No fresh candidate boot')
             time.sleep(1)
         self.log('Run ' + label + ': ' + boot.decode(errors='replace'))
+        crashes_before = set((self.get(self.data + '/logs/crash-index.txt', True) or b'').decode(errors='replace').split())
         self.started = time.monotonic()
         events = list(self.args.events)
         next_shot, last_collect, crashed = self.args.shots, -30, None
@@ -203,6 +204,12 @@ class Bench(nir.Console):
                 elif not current or current[0] != boot:
                     crashed = round(elapsed)
                     self.log(f'{label}: application restarted/crashed at {crashed}s')
+                    break
+                index = (self.current / 'crash-index.txt').read_text(errors='replace').split() \
+                    if (self.current / 'crash-index.txt').exists() else []
+                if set(index) - crashes_before:
+                    crashed = round(elapsed)
+                    self.log(f'{label}: crash report {sorted(set(index) - crashes_before)} at {crashed}s')
                     break
                 heap = (self.current / 'heap.log').read_text(errors='replace') if (self.current / 'heap.log').exists() else ''
                 if not self.control('status').count('PPSA98515'):

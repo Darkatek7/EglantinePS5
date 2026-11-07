@@ -86,3 +86,13 @@ same binary with and without each change, two runs each at the gate:
 
 Neither of the first two is in the patch: the gains are within 2% for changes with wider reach.
 Going further needs cheaper draws on the back half (or splitting draw processing across threads).
+
+## Reusing a draw's whole setup (tried, not kept)
+
+A draw whose pipeline, texture handles, samplers, TIC entries and view images (nothing to upload
+or copy) and uniform buffers (same bindings, byte-identical streamed bytes, no CPU write to bound
+buffers) matched the previous draw of that pipeline in the same command buffer pushed that draw's
+descriptors again instead of preparing them. At the gate, per 5 s: ~340,000 draws qualified,
+~171,000 failed the texture check (an image to refresh or an alias to synchronize), and 99% of the
+rest failed the uniform-buffer check: the game uploads per-object constants for nearly every draw.
+0.5% of draws reused their setup, which did not pay for the checks (15.25 vs 15.33 FPS).
