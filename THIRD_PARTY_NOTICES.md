@@ -58,10 +58,9 @@ builds on the following projects, each under its own license.
   MME equivalents and their differential checks (`headless/macro_native*`,
   `tools/check-macro-native*`) are also adapted from ProsperoEden; uploaded
   instruction streams are represented only by SHA-256 signatures.
-  The RADV driver adaptations that split long transfer and barrier runs
-  (`tools/patch-radv-transfer-split.py`) and keep dropped geometry-shader
-  compute draws off null pointers (`tools/patch-radv-gs-compute.py`) are
-  backported from ProsperoEden.
+  The RADV driver adaptation that keeps dropped geometry-shader compute draws
+  off null pointers (`tools/patch-radv-gs-compute.py`) is backported from
+  ProsperoEden.
   The FPS overlay's selectable fields, its size and corner settings and the
   machine numbers it shows (busiest emulated core, GPU busy share from the
   scheduler's timestamps, free memory) are adapted from ProsperoEden's overlay

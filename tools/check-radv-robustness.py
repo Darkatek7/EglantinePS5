@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The driver robustness patches (geometry-shader compute sinks, transfer splits) are wired in.
+"""The driver robustness patch (geometry-shader compute sinks) is wired in.
 
-Checks that build-radv-dependencies.sh applies and stamps both, that prepare-build.sh rebuilds the
-driver when a stamp is missing or stale, and, when the driver export is on this machine, that both
-apply to a copy of it and that running them again changes nothing.
+Checks that build-radv-dependencies.sh applies and stamps it, that prepare-build.sh rebuilds the
+driver when a stamp is missing or stale, and, when the driver export is on this machine, that it
+applies to a copy of it and that running it again changes nothing.
 """
 from pathlib import Path
 import shutil
@@ -15,8 +15,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 prepare = (root / 'tools/prepare-build.sh').read_text()
 build = (root / 'tools/build-radv-dependencies.sh').read_text()
-scripts = {'patch-radv-gs-compute.py': 'EDEN_GS_COMPUTE_SHA256',
-           'patch-radv-transfer-split.py': 'EDEN_TRANSFER_SPLIT_SHA256'}
+scripts = {'patch-radv-gs-compute.py': 'EDEN_GS_COMPUTE_SHA256'}
 
 for name, stamp_name in scripts.items():
     script = root / 'tools' / name
@@ -50,8 +49,6 @@ if export.is_dir():
         vulkan = tree / 'src/amd/vulkan'
         assert 'const uint64_t null_sink = radv_gs_compute_upload' in (vulkan / 'radv_cmd_buffer.c').read_text()
         assert 'block->ro_sink;\n      p->count_buffer' in (vulkan / 'cl/radv_gs_compute.cl').read_text()
-        for meta in ('meta/radv_meta_buffer.c', 'meta/radv_meta_copy.c'):
-            assert (vulkan / meta).read_text().count('tools/patch-radv-transfer-split.py */') == 3, meta
     print('RADV robustness: wired in, stamped, applies to the export and is idempotent')
 else:
     print('RADV robustness: wired in and stamped (no driver export here to apply to)')
