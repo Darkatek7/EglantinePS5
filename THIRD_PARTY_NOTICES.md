@@ -56,10 +56,9 @@ builds on the following projects, each under its own license.
   MME equivalents and their differential checks (`headless/macro_native*`,
   `tools/check-macro-native*`) are also adapted from ProsperoEden; uploaded
   instruction streams are represented only by SHA-256 signatures.
-  The RADV driver adaptations that split long transfer and barrier runs
-  (`tools/patch-radv-transfer-split.py`) and keep dropped geometry-shader
-  compute draws off null pointers (`tools/patch-radv-gs-compute.py`) are
-  backported from ProsperoEden.
+  The RADV driver adaptation that keeps dropped geometry-shader compute draws
+  off null pointers (`tools/patch-radv-gs-compute.py`) is backported from
+  ProsperoEden.
 - **[PS5 Mesa](https://github.com/mihawk-99/PS5_Mesa)** and
   **[PS5 Vulkan](https://github.com/mihawk-99/PS5_Vulkan)** by Mihawk. The
   RADV Vulkan driver (Mesa, mainly MIT) and its PS5 link recipe and platform
