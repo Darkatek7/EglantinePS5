@@ -62,14 +62,13 @@ public:
     };
     static_assert(sizeof(FastDispatchEntry) == 0x10);
 #if defined(__PROSPERO__) // PS5
-    // 64 Ki entries (1 MiB) per core instead of 1 Mi (16 MiB): the A32 size; a miss only costs a
-    // block lookup.
-    static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x10000;
+    // 64 Ki entries (1 MiB) per core instead of 1 Mi (16 MiB), also where the options are not set.
+    static constexpr size_t default_fast_dispatch_table_bits = 16;
 #else // PS5
-    static constexpr u64 fast_dispatch_table_mask = 0xFFFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x100000;
+    static constexpr size_t default_fast_dispatch_table_bits = 20;
 #endif // PS5
+    /// Entries per set when conf.fast_dispatch_set_associative (one 64-byte cache line).
+    static constexpr size_t fast_dispatch_ways = 4;
 
     void ClearFastDispatchTable();
     void GenMemory128Accessors();
@@ -133,8 +132,11 @@ public:
     const A64::UserConfig conf;
     RegAlloc reg_alloc; //reusable reg alloc
     BlockRangeInformation<u64> block_ranges;
-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
-    std::vector<FastmemPatchInfo> fastmem_patch_info;
+    std::vector<FastDispatchEntry> fast_dispatch_table;
+    /// Byte offset mask of a set (or entry) in fast_dispatch_table.
+    u32 fast_dispatch_table_mask = 0;
+    size_t fast_dispatch_set_size = 1;
+    std::vector<FastmemPatchInfo> fastmem_patch_info;  // sorted by rip
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
