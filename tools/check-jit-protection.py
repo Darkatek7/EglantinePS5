@@ -69,6 +69,8 @@ struct BlockOfCode {
     bool writing = true;
     std::vector<size_t> patch_pages;
     CodePtr code_begin;
+    const unsigned char* far_code_begin = nullptr;  // far code is off with W^X (upstream af476ac3d5)
+    const unsigned char* far_code_ptr = nullptr;
     bool prelude_complete = true;
     bool hasWritableAlias() const { return false; }
     size_t getSize() const { return size; }
