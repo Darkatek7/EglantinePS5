@@ -86,6 +86,14 @@ if [[ -f $radv_release/lib/libvulkan_radeon.ps5.a ]]; then
         step "RADV: driver memory from 2 MiB pieces changed"
         bash tools/build-radv-dependencies.sh
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
+    elif ! python3 -B tools/patch-radv-gs-compute.py --check "$radv_release/EDEN_GS_COMPUTE_SHA256"; then
+        step "RADV: geometry-shader compute passes for dropped draws changed"
+        bash tools/build-radv-dependencies.sh
+        rm -f build/radv-isolated/libvulkan_radeon.ps5.a
+    elif ! python3 -B tools/patch-radv-transfer-split.py --check "$radv_release/EDEN_TRANSFER_SPLIT_SHA256"; then
+        step "RADV: splitting command streams before transfers and barriers changed"
+        bash tools/build-radv-dependencies.sh
+        rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     elif ! python3 -B tools/patch-radv-wsi.py --check "$radv_release/EDEN_WSI_SHA256"; then
         step "RADV: the display code's adaptation changed"
         bash tools/build-radv-dependencies.sh

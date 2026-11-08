@@ -46,6 +46,8 @@ python3 "$root/tools/patch-radv-disk-cache.py"
 python3 "$root/tools/patch-radv-memory-report.py"
 python3 "$root/tools/patch-radv-pieces.py"
 python3 "$root/tools/patch-radv-trim.py"
+python3 "$root/tools/patch-radv-gs-compute.py"
+python3 "$root/tools/patch-radv-transfer-split.py"
 bash "$vulkan/tools/build-radv.sh" release
 sha256sum "$vulkan/.deps/work/radv-src/src/vulkan/wsi/wsi_common_videoout.c" \
     > "$vulkan/.deps/native/radv-release/EDEN_WSI_SHA256"
@@ -58,3 +60,7 @@ python3 "$root/tools/patch-radv-pieces.py" --digest \
     > "$vulkan/.deps/native/radv-release/EDEN_MEMORY_PIECES_SHA256"
 python3 "$root/tools/patch-radv-trim.py" --digest \
     > "$vulkan/.deps/native/radv-release/EDEN_MEMORY_TRIM_SHA256"
+python3 "$root/tools/patch-radv-gs-compute.py" --digest \
+    > "$vulkan/.deps/native/radv-release/EDEN_GS_COMPUTE_SHA256"
+python3 "$root/tools/patch-radv-transfer-split.py" --digest \
+    > "$vulkan/.deps/native/radv-release/EDEN_TRANSFER_SPLIT_SHA256"
