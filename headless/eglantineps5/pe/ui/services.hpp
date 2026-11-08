@@ -67,7 +67,7 @@ struct UpdateStatus
 struct Game
 {
     std::string name;
-    std::string format; // "NSP" or "XCI"
+    std::string format; // "NSP", "XCI", "NUP" or "DIR"
     std::string size;   // "1.2 GB"
     std::string file;   // its name in the games folder
     std::string cover;  // image path; empty without cover art

@@ -42,10 +42,12 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/nca_metadata.h"
+#include "core/file_sys/nup.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/submission_package.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/file_sys/vfs/vfs_vector.h"
 #include "core/hle/service/ns/language.h"
 #include "core/hle/service/set/settings_types.h"
 #include "core/loader/loader.h"
@@ -73,6 +75,33 @@ FileSys::VirtualDir OpenControlRomFs(const FileSys::VirtualFile& file, bool xci)
     if (!control || control->GetStatus() != Loader::ResultStatus::Success) return {};
     const auto romfs = control->GetRomFS();
     return romfs ? FileSys::ExtractRomFS(romfs) : FileSys::VirtualDir{};
+}
+
+// A NUP container (core/file_sys/nup.h) has no control NCA: its meta block holds the control data
+// and the icon. They are given as a control RomFS would hold them (control.nacp,
+// icon_AmericanEnglish.dat), and its title record in *title. nullptr when the file is no NUP.
+FileSys::VirtualDir OpenNupControl(const FileSys::VirtualFile& file, std::string* title = nullptr) {
+    if (!FileSys::Nup::Archive::HasMagic(file)) return {};
+    std::string error;
+    const auto archive = FileSys::Nup::Archive::OpenMetadata(file, &error);
+    if (!archive) {
+        std::fprintf(stderr, "[EglantinePS5] library: %s is not a usable NUP: %s\n", file->GetName().c_str(),
+                     error.c_str());
+        return {};
+    }
+    const auto& package = *archive->MetadataPackage();
+    auto meta = archive->Meta(package);
+    std::vector<FileSys::VirtualFile> files;
+    using Type = FileSys::Nup::MetaType;
+    if (auto nacp = meta.find(static_cast<u16>(Type::Nacp)); nacp != meta.end())
+        files.push_back(std::make_shared<FileSys::VectorVfsFile>(std::move(nacp->second), "control.nacp"));
+    if (auto icon = meta.find(static_cast<u16>(Type::Icon)); icon != meta.end())
+        files.push_back(std::make_shared<FileSys::VectorVfsFile>(std::move(icon->second), "icon_AmericanEnglish.dat"));
+    if (title) {
+        const auto name = meta.find(static_cast<u16>(Type::TitleName));
+        *title = name != meta.end() ? std::string(name->second.begin(), name->second.end()) : std::string{};
+    }
+    return std::make_shared<FileSys::VectorVfsDirectory>(std::move(files));
 }
 
 std::string ReadTitle(const FileSys::VirtualDir& romfs) {
@@ -210,6 +239,10 @@ uint64_t eden_game_title_id(const char* rom_path) {
         FileSys::NSP package(file);
         return package.GetStatus() == Loader::ResultStatus::Success ? package.GetProgramTitleID() : 0;
     }
+    if (path.ends_with(".nup")) {
+        const auto archive = FileSys::Nup::Archive::OpenMetadata(file);
+        return archive ? archive->ProgramTitleID() : 0;
+    }
     return 0;
 }
 
@@ -226,12 +259,16 @@ int eden_extract_game_metadata(const char* rom_path, const char* keys_dir,
     std::transform(path.begin(), path.end(), path.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     const bool xci = path.size() >= 4 && path.substr(path.size() - 4) == ".xci";
-    const auto romfs = OpenControlRomFs(file, xci);
+    std::string nup_title;
+    auto romfs = OpenNupControl(file, &nup_title);
+    if (!romfs) romfs = OpenControlRomFs(file, xci);
     if (!romfs) return 0;
     GameLanguages()[rom_path] = ReadLanguages(romfs);
 
     int result = 0;
-    const auto extracted_title = ReadTitle(romfs);
+    // A NUP's own title record wins over its control data (its SPEC.md §5).
+    const auto extracted_title =
+        Eden::UsableName(nup_title.c_str()) ? Eden::PlainName(nup_title.c_str()) : ReadTitle(romfs);
     if (!extracted_title.empty()) {
         std::snprintf(title, title_capacity, "%s", extracted_title.c_str());
         result |= EDEN_METADATA_TITLE;
@@ -252,7 +289,8 @@ uint32_t eden_game_supported_languages(const char* rom_path, const char* keys_di
         std::string path = rom_path;
         std::transform(path.begin(), path.end(), path.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        const auto romfs = OpenControlRomFs(file, path.ends_with(".xci"));
+        auto romfs = OpenNupControl(file);
+        if (!romfs) romfs = OpenControlRomFs(file, path.ends_with(".xci"));
         if (!romfs) return 0;
         return GameLanguages()[rom_path] = ReadLanguages(romfs);
     } catch (const std::exception& error) {
