@@ -93,6 +93,8 @@ class Launcher
         multiplayer,
         preparing,    // a game on a network share, read before it starts (remote.cpp)
     };
+    // Settings > Controls' rows: vibration, its strength, then the button mapping (its own list).
+    static constexpr int kControlsMappingRow = 2;
     // The update dialog's steps: the offer, installing, stopping it, closing for the helper to
     // finish, and a failure.
     enum class UpdateStage : std::uint8_t

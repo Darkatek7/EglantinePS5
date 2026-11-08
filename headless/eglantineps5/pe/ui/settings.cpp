@@ -337,7 +337,7 @@ void Launcher::draw_settings(Canvas &c)
         break;
     case kControls:
         about = tr("Vibration, button mapping and the shortcuts during a game.");
-        lines = {{tr("VIBRATION"), on_off(prefs_.vibration)},
+        lines = {{tr("VIBRATION"), prefs_.vibration ? percent(prefs_.vibration_strength) : on_off(false)},
                  {tr("BUTTON MAPPING"), prefs_.mapping == kDefaultMapping ? tr("As usual") : tr("Changed")},
                  {tr("END GAME"), std::string(tr("Touchpad")) + " + L1"},
                  {tr("FPS OVERLAY"), std::string(tr("Touchpad")) + " + R1"}};
@@ -475,7 +475,8 @@ int Launcher::dialog_rows(Modal modal) const
                (library_.selected < static_cast<int>(games_.size()) &&
                         !games_[static_cast<std::size_t>(library_.selected)].sources.empty() &&
                         !games_[static_cast<std::size_t>(library_.selected)].remote ? 1 : 0);
-    case Modal::controls:     // vibration, the button mapping
+    case Modal::controls:     // vibration, its strength, the button mapping
+        return 3;
     case Modal::diagnostics:  // detailed logging, logs written at once
         return 2;
     default:
@@ -496,8 +497,8 @@ float Launcher::dialog_row_top(Modal modal, int row) const
         return kVideoRowsTop + kVideoRowPitch * static_cast<float>(row) - video_rows_.scroll();
     case Modal::game:
         return 334.0f + 96.0f * static_cast<float>(row);
-    case Modal::controls: // under the shortcuts
-        return 560.0f + 96.0f * static_cast<float>(row);
+    case Modal::controls: // under the shortcuts, ending where the three-row dialogs' rows end
+        return 492.0f + 96.0f * static_cast<float>(row);
     case Modal::diagnostics: // under the setup's state
         return 500.0f + 102.0f * static_cast<float>(row);
     default:
@@ -616,12 +617,22 @@ void Launcher::press_dialog(Key key)
         break;
     }
     case Modal::controls:
-        if (option_ == 1)
+        if (option_ == kControlsMappingRow)
         {
             // The button mapping has its own list (game_options.cpp).
             if (activate)
                 open_mapping(false);
             return;
+        }
+        if (option_ == 1)
+        {
+            // Vibration strength, in steps of 25%: a share of what the game asks for, applied by
+            // Eden to each controller's rumble (main.cpp).
+            if (!adjust)
+                return;
+            prefs_.vibration_strength = std::clamp(prefs_.vibration_strength + 25 * step, 25, 100);
+            sound = Cue::slider;
+            break;
         }
         prefs_.vibration = !prefs_.vibration;
         break;
@@ -832,7 +843,8 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
             {" + R1", TR("Show or hide the FPS overlay")}};
         for (int i = 0; i < 2; ++i)
         {
-            const float top = 366.0f + 78.0f * static_cast<float>(i);
+            // Close together, so that the three rows below still end above the hints.
+            const float top = 350.0f + 66.0f * static_cast<float>(i);
             list.bordered_rect({592.0f, top, 186.0f, 54.0f}, 12.0f, Color::rgb(0x231517, 0.9f),
                                1.0f, theme::kRowEdge.with_alpha(0.6f));
             text_shrink(c, std::string(tr("Touchpad")) + kShortcuts[i].key, 685.0f,
@@ -843,12 +855,24 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
         }
         label(0, tr("Vibration"), kToggle);
         toggle(c, 1292.0f, row_centre(0), knob);
+        // The strength as a level row, as Audio's volumes are: its value at the right, the bar
+        // ending 20 before it.
+        {
+            const std::string value = percent(prefs_.vibration_strength);
+            const float level_shown =
+                text(c, value, 1292.0f, baseline(dialog_row_top(modal, 1), 94.0f, theme::kText24),
+                     theme::kText24, prefs_.vibration ? theme::kLimePale : theme::kMeta, Align::right);
+            const float gap = std::max(96.0f, level_shown + 20.0f);
+            level_bar(c, 1292.0f - gap, row_centre(1), 260.0f,
+                      static_cast<float>(prefs_.vibration_strength) / 100.0f, option_ == 1 ? 1.0f : 0.0f);
+            label(1, tr("Vibration strength"), 260.0f + gap);
+        }
         // The button mapping: as usual or changed, opened with Cross.
         const float shown = text_shrink(
             c, prefs_.mapping == kDefaultMapping ? tr("As usual") : tr("Changed"), 1292.0f,
-            baseline(dialog_row_top(modal, 1), 94.0f, theme::kSmall), theme::kSmall,
+            baseline(dialog_row_top(modal, kControlsMappingRow), 94.0f, theme::kSmall), theme::kSmall,
             prefs_.mapping == kDefaultMapping ? theme::kMeta : theme::kLimePale, 320.0f, Align::right);
-        label(1, tr("Button mapping"), shown);
+        label(kControlsMappingRow, tr("Button mapping"), shown);
         break;
     }
     case Modal::performance:
@@ -946,7 +970,7 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
         notice(c, message_, 592.0f, foot + 7.0f, theme::kSmall,
                message_warning_ ? theme::kWarning : theme::kLimePale, 736.0f, message_warning_);
     }
-    else if (modal == Modal::controls && option_ == 1)
+    else if (modal == Modal::controls && option_ == kControlsMappingRow)
     {
         static constexpr Hint kOpen[] = {
             {Pad::updown, TR("Select")}, {Pad::cross, TR("Open")}, {Pad::circle, TR("Back")}};

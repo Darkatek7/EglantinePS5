@@ -1370,7 +1370,8 @@ int main(int argc, char** argv) {
             const auto controls = Eden::PreferencesFor(game_title);
             Settings::values.vibration_enabled.SetValue(controls.vibration);
             pad->SetMapping(controls.mapping);
-            Eden::Report("launch", (std::string("Controls: vibration ") + (controls.vibration ? "on" : "off") +
+            Eden::Report("launch", (std::string("Controls: vibration ") +
+                                    (controls.vibration ? std::to_string(controls.vibration_strength) + "%" : "off") +
                                     ", buttons " + (controls.mapping == Eden::kDefaultMapping ? std::string("as usual") :
                                     Eden::Settings::MappingJson(controls.mapping).dump())).c_str());
             // One Pro Controller per signed-in user's DualSense; later changes apply mid-game.
@@ -1386,16 +1387,17 @@ int main(int argc, char** argv) {
                 player.connected = handheld ? false : index == 0 || (connected & (1u << index)) != 0;
                 player.controller_type = handheld ? Settings::ControllerType::ProController :
                                                     Eden::ControllerSetting(controls.controller);
-                // DualSense rumble (headless/pad.cpp) at Eden's full strength.
+                // DualSense rumble (headless/pad.cpp) at the strength of Settings > Controls: Eden
+                // scales what the game asks for by it (emulated_controller.cpp).
                 player.vibration_enabled = true;
-                player.vibration_strength = 100;
+                player.vibration_strength = controls.vibration_strength;
             }
             {
                 auto& player = Settings::values.players.GetValue()[8];  // Eden's handheld controller
                 player.connected = handheld;
                 player.controller_type = Settings::ControllerType::Handheld;
                 player.vibration_enabled = true;
-                player.vibration_strength = 100;
+                player.vibration_strength = controls.vibration_strength;
             }
             if (controls.controller >= 0)
                 Eden::Report("launch", (std::string("Controller type: ") +
