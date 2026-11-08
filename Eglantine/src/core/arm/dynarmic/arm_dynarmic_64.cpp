@@ -554,6 +554,14 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fast_dispatch_set_associative = true;
         // A 32-entry return stack buffer: returns from deeper call chains skip the dispatcher.
         config.rsb_size = 32;
+        // Unlinked exits jump to one shared stub per target: 5/6-byte patch sites instead of
+        // 22/23 bytes plus an inline exit stub.
+#if !defined(__PROSPERO__) // not PS5
+        config.compact_block_exits = true;
+#else // PS5
+        // Block links go through the JitGroup (jit_group.h), whose sites are 5/6-byte rel32 jumps
+        // already; dynarmic's own patch sites, which this option compacts, are not used.
+#endif // PS5
     }
 #endif
     m_jit.emplace(config);
