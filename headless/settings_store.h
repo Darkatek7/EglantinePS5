@@ -8,7 +8,8 @@
 //                "output_resolution": "1080p", "frame_gen": false,
 //                "frame_gen_target": "auto", "frame_gen_multiplier": "2" },
 //     "audio": { "volume": 100, "mute": false, "menu_volume": 70 },
-//     "controls": { "vibration": true, "mapping": { "a": "cross", "b": "circle" } },
+//     "controls": { "vibration": true, "vibration_strength": 100,
+//                   "mapping": { "a": "cross", "b": "circle" } },
 //     "system": { "language": "en-US" },
 //     "accessibility": { "large_text": false, "high_contrast": false, "reduce_motion": false },
 //     "diagnostics": { "detailed_logging": false, "immediate_logs": false },
@@ -125,6 +126,7 @@ struct Preferences {
     int frame_gen_target = 0;            // index into kFrameGenTargetKeys (0 is "auto")
     int frame_gen_multiplier = 0;        // index into kFrameGenMultiplierKeys (0 is 2x)
     bool vibration = true;
+    int vibration_strength = 100;        // percent of what a game asks for: 25, 50, 75 or 100
     int language = 0;                    // index into kLanguageKeys (English (US), Eden's default)
     int menu_volume = 70;                // the launcher's own sounds, 0 (off) to 100
     bool large_text = false;             // Settings > Accessibility: the launcher's look
@@ -362,6 +364,10 @@ inline Preferences LoadPreferences(const std::string& file = SettingsFile()) {
         Settings::String(document, Json::json_pointer("/video/frame_gen_multiplier")),
         kFrameGenMultiplierKeys, int(std::size(kFrameGenMultiplierKeys)), result.frame_gen_multiplier);
     result.vibration = Settings::Bool(document, Json::json_pointer("/controls/vibration"), result.vibration);
+    // A strength between the steps reads as the step below it; out of range as the nearest end.
+    result.vibration_strength = std::clamp(
+        Settings::Int(document, Json::json_pointer("/controls/vibration_strength"), result.vibration_strength), 25,
+        100) / 25 * 25;
     result.language = KeyIndex(Settings::String(document, Json::json_pointer("/system/language")),
                                kLanguageKeys, int(std::size(kLanguageKeys)), result.language);
     result.large_text = Settings::Bool(document, Json::json_pointer("/accessibility/large_text"), false);
@@ -380,6 +386,7 @@ inline bool SavePreferences(const Preferences& value, const std::string& file = 
         value.output < 0 || value.output >= int(std::size(kOutputKeys)) ||
         value.frame_gen_type < 0 || value.frame_gen_type >= int(std::size(kFrameGenTypeKeys)) ||
         value.language < 0 || value.language >= int(std::size(kLanguageKeys)) ||
+        value.vibration_strength < 25 || value.vibration_strength > 100 || value.vibration_strength % 25 != 0 ||
         !ValidMapping(value.mapping)) return false;
     Settings::Json document = Settings::Load(file);
     document["version"] = 1;
@@ -397,6 +404,7 @@ inline bool SavePreferences(const Preferences& value, const std::string& file = 
     document["audio"]["mute"] = value.mute;
     document["audio"]["menu_volume"] = value.menu_volume;
     document["controls"]["vibration"] = value.vibration;
+    document["controls"]["vibration_strength"] = value.vibration_strength;
     if (value.mapping == kDefaultMapping) document["controls"].erase("mapping");
     else document["controls"]["mapping"] = Settings::MappingJson(value.mapping);
     document["system"]["language"] = kLanguageKeys[value.language];

@@ -5,6 +5,8 @@
 #include <cassert>
 #include <fstream>
 #include <filesystem>
+#include <initializer_list>
+#include <utility>
 #include <unistd.h>
 
 static std::string Read(const std::string& path) {
@@ -197,6 +199,29 @@ int main() {
     assert(Eden::SavePreferences(controls, file));
     assert(!Eden::LoadPreferences(file).vibration);
     assert(Read(file).find("\"vibration\": false") != std::string::npos);
+    // Its strength: 100% unless lowered, in steps of 25%. A value between the steps reads as the
+    // step below it, one out of range as the nearest end, one that is no number as the default
+    // (100%); saving refuses anything but a step.
+    assert(controls.vibration_strength == 100);
+    controls.vibration_strength = 75;
+    assert(Eden::SavePreferences(controls, file));
+    assert(Eden::LoadPreferences(file).vibration_strength == 75);
+    assert(Read(file).find("\"vibration_strength\": 75") != std::string::npos);
+    for (const int refused : {0, 10, 60, 125}) {
+        auto wrong = controls;
+        wrong.vibration_strength = refused;
+        assert(!Eden::SavePreferences(wrong, file));
+    }
+    assert(Eden::LoadPreferences(file).vibration_strength == 75);
+    for (const auto& [stored, read] : std::initializer_list<std::pair<const char*, int>>{
+             {"60", 50}, {"10", 25}, {"400", 100}, {"-5", 25}, {"\"loud\"", 100}}) {
+        auto document = Eden::Settings::LoadWhole(file);
+        document["controls"]["vibration_strength"] = Eden::Settings::Json::parse(stored);
+        { std::ofstream(file) << document.dump(); }
+        assert(Eden::LoadPreferences(file).vibration_strength == read);
+    }
+    controls.vibration_strength = 100;
+    assert(Eden::SavePreferences(controls, file));
 
     // The launcher's look (Settings > Accessibility): all off unless turned on.
     auto look = Eden::LoadPreferences(file);

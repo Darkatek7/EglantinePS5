@@ -478,7 +478,7 @@ A bug fix for v1.000.090. If you are on v1.000.090, update.
 - **Games close in about a second.** Touchpad + L1 used to take 10-25 seconds to return to the library; logging no longer waits on the console's storage, and the emulator skips needless teardown work.
 - **Up to four controllers.** Each signed-in PS5 user's controller becomes the next player (player 1 is whoever launched the game); controllers can join or leave during a game, and games that ask for controllers connect every one in use.
 - The Touchpad + L1 and Touchpad + R1 shortcuts work from any controller.
-- **Vibration and motion.** DualSense rumble for games that use it (turn it off in **Settings > Controls**), and the controller's gyro and accelerometer for motion controls.
+- **Vibration and motion.** DualSense rumble for games that use it, played as HD rumble through the controller's haptic actuators (the classic rumble motors when those are not available), including Switch 2 games; turn it off or lower its strength (25-100%) in **Settings > Controls**. The controller's gyro and accelerometer drive motion controls.
 - **Resolution and upscaling.** **Settings > Video** now sets the internal rendering resolution (0.5x to 2x) and the filter that scales it to the TV: Bilinear, AMD FSR, Bicubic or Nearest.
 - **Per-game settings.** Press Triangle on a game in the Library to give it its own renderer, resolution and upscaling filter.
 - **Language setting.** **Settings > Language** picks the language games use (18 languages), with the console region that goes with it. It applies when a game starts.

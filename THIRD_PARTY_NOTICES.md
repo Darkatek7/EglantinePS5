@@ -90,6 +90,13 @@ builds on the following projects, each under its own license.
 - **[ps5log](https://github.com/mpereiraesaa/ps5-agc-gears/tree/1ae1f9182abd2770c131b97419034fb85173c2dc/native/ps5log)**,
   GPL-3.0-or-later. The pinned single-header logging client used as an upstream
   Lapy helper build input.
+- **[ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden)**,
+  GPL-3.0-or-later. The DualSense HD rumble through audio haptics with its
+  motor fallback (`headless/pad_haptics.*`, its wiring in `headless/pad.cpp`
+  and its host checks), the vibration strength setting, and the decoding of
+  the Switch 2 vibration batches (HID command 214,
+  `tools/eglantine-patches/0038-switch2-vibration-values.patch`) are adapted
+  from ProsperoEden.
 - **[ProsperoPuzzles](https://github.com/blackbearreloaded/ProsperoPuzzles)**,
   GPL-3.0-or-later. The launcher's drawing, text, animation and sound code
   (`headless/eglantineps5/pe`) started there.
