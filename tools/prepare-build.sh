@@ -45,7 +45,8 @@ if [[ ! -f $scratch/sdk/.complete ]]; then
     cp -a ../ps5-native-app-boilerplate/.deps/native/ps5-payload-sdk/target "$scratch/sdk/"
     touch "$scratch/sdk/.complete"
 fi
-if [[ ! -f $scratch/ffmpeg-native/install/lib/libavcodec.a ]]; then
+# .with-dav1d: built with the AV1 decoder (an older cache rebuilds once).
+if [[ ! -f $scratch/ffmpeg-native/install/lib/libavcodec.a || ! -f $scratch/ffmpeg-native/install/.with-dav1d ]]; then
     step "FFmpeg for the PS5"
     bash tools/build-headless-ffmpeg.sh
 fi
@@ -84,6 +85,10 @@ if [[ -f $radv_release/lib/libvulkan_radeon.ps5.a ]]; then
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     elif ! python3 -B tools/patch-radv-pieces.py --check "$radv_release/EDEN_MEMORY_PIECES_SHA256"; then
         step "RADV: driver memory from 2 MiB pieces changed"
+        bash tools/build-radv-dependencies.sh
+        rm -f build/radv-isolated/libvulkan_radeon.ps5.a
+    elif ! python3 -B tools/patch-radv-gs-compute.py --check "$radv_release/EDEN_GS_COMPUTE_SHA256"; then
+        step "RADV: geometry-shader compute passes for dropped draws changed"
         bash tools/build-radv-dependencies.sh
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     elif ! python3 -B tools/patch-radv-wsi.py --check "$radv_release/EDEN_WSI_SHA256"; then

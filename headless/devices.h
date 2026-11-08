@@ -12,6 +12,7 @@
 #include "input_common/drivers/virtual_gamepad.h"
 #include "input_common/input_engine.h"
 #include "button_mapping.h"
+#include "pad_haptics.h"
 #include "ps5_pad.hpp"
 
 namespace Eden {
@@ -41,11 +42,16 @@ public:
     Common::Input::DriverResult SetVibration(const PadIdentifier& identifier,
                                              const Common::Input::VibrationStatus& vibration) override;
     bool IsVibrationEnabled(const PadIdentifier&) override { return true; }
-    // The DualSense motor levels for a player when they changed since the last call: large (low
-    // frequency) and small (high frequency), 0-255.
+    // A player's DualSense levels when they changed since the last call: the motor bytes, large
+    // (low band) and small (high band), 0-255, plus the same levels as amplitudes (same curve)
+    // and the HD rumble frequencies, which the audio-haptics route plays (pad_haptics.h).
     struct Rumble {
         u8 large = 0;
         u8 small = 0;
+        float large_amplitude = 0.0f;
+        float small_amplitude = 0.0f;
+        float large_hz = 55.0f;
+        float small_hz = 190.0f;
     };
     bool TakeRumble(std::size_t player, Rumble& rumble);
 private:
@@ -99,6 +105,9 @@ private:
         int handle = -1;
         u32 last_buttons = 0;
         u64 last_motion_us = 0;
+        // HD rumble through audio haptics, else the motors; present whenever the handle is.
+        std::unique_ptr<HapticStream> haptics;
+        HapticStream::Stats last_haptic_stats;  // what Poll last reported (route changes)
         // The touchpad as a game button (the guest's Minus unless mapped otherwise), see Consume.
         bool touch_chord = false;  // this press was part of a shortcut
         bool select_held = false;  // a long press: its button stays down until the release

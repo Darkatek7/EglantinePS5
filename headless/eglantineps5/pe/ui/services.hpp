@@ -285,6 +285,12 @@ struct Profile
 struct Preferences
 {
     bool hud = true;
+    // The FPS overlay's look: what its line shows (a bit per field, hud.h's kHudField*, from the
+    // renderer up to the ping), its size (0 1x, 1 1.5x, 2 2x) and corner (top left, top right,
+    // bottom left, bottom right).
+    int hud_fields = 0xcf; // all but CPU and GPU: settings_store.h's default
+    int hud_size = 0;
+    int hud_corner = 0;
     int volume = 100; // game volume, 0-100
     bool mute = false;
     bool detailed_logging = false;
@@ -301,12 +307,16 @@ struct Preferences
     int frame_gen_target = 0;      // index into kFrameGenTargetKeys: 0 auto, then 60/90/120/144/240
     int frame_gen_multiplier = 0;  // index into kFrameGenMultiplierKeys: 2x, 3x, 4x
     bool vibration = true;
+    int vibration_strength = 100; // percent of what a game asks for: 25, 50, 75 or 100
     int language = 0;
     int menu_volume = 70; // launcher sounds, 0-100
     // Accessibility: how the launcher itself is shown (theme.hpp, Look).
     bool large_text = false;
     bool high_contrast = false;
     bool reduce_motion = false;
+    // The launcher's theme and accent preset, by id (theme.hpp); "" is the theme's own accent.
+    std::string theme = "eglantine";
+    std::string accent;
     // Performance: speed against accuracy, for every game.
     bool block_list = false;    // compile the code of earlier sessions ahead
     bool async_shaders = false; // draw before a new shader is ready
