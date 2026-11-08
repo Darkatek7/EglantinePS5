@@ -99,9 +99,11 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block, bool publish) noe
     code.align();
     const auto* const entrypoint = code.getCurr();
     eden_checkbit_mark = nullptr;
-    if (!eden_jit_frame_once) {
+    // EglantinePS5's frame_once sets %rbp once in the dispatcher prologue (block_of_code.cpp);
+    // upstream's omit_block_frame leaves it out altogether. Either keeps it out of the blocks.
+    if (!eden_jit_frame_once && !conf.omit_block_frame) {
         code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
-    code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+        code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
     }
 
     DEBUG_ASSERT(block.GetCondition() == IR::Cond::AL);
@@ -159,7 +161,9 @@ finish_this_inst:
     reg_alloc.AssertNoMoreUses();
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
-    if (!eden_jit_frame_once) code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+    if (!eden_jit_frame_once && !conf.omit_block_frame) {
+        code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+    }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
