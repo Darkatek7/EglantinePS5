@@ -1149,7 +1149,14 @@ std::uint32_t ColdNow() noexcept {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 std::size_t cold_rotor = 0;
-std::atomic<std::uint64_t> cold_1{0}, cold_3{0}, cold_6{0}, cold_own{0};
+std::atomic<std::uint64_t> cold_1{0}, cold_3{0}, cold_6{0}, cold_own{0}, cold_zero{0}, cold_zero_old{0};
+// Diagnostic (MKW leak): every 64th word of the slot is zero.
+bool ColdLooksZero(std::uintptr_t at) noexcept {
+    const auto* word = reinterpret_cast<const volatile std::uint64_t*>(at);
+    for (std::size_t i = 0; i < SparseSlot / 8; i += 64)
+        if (word[i] != 0) return false;
+    return true;
+}
 std::atomic<std::uint64_t> cold_sampled_bytes{0}, cold_compressed_bytes{0}, cold_compress_ns{0};
 
 std::uint64_t ColdHash(std::uintptr_t at) noexcept {
@@ -1175,7 +1182,7 @@ void ColdPass(SparseRange& range, std::size_t slots) noexcept {
         pack_ready.reserve(slots);
     }
     candidates.clear();
-    std::uint64_t own = 0, c1 = 0, c3 = 0, c6 = 0;
+    std::uint64_t own = 0, c1 = 0, c3 = 0, c6 = 0, zero = 0, zero_old = 0;
     const std::uint32_t now = ColdNow();
     for (std::size_t slot = 0; slot < slots; ++slot) {
         if (SlotState(range, slot) != SlotOwn) {
@@ -1194,7 +1201,13 @@ void ColdPass(SparseRange& range, std::size_t slots) noexcept {
         c3 += age >= 60;
         c6 += age >= 120;
         if (age >= ColdSeconds) candidates.push_back(slot);
+        if (ColdReport() && ColdLooksZero(SlotAddress(range, slot))) {
+            ++zero;
+            zero_old += age >= 60;
+        }
     }
+    cold_zero.store(zero, std::memory_order_relaxed);
+    cold_zero_old.store(zero_old, std::memory_order_relaxed);
     cold_own.store(own, std::memory_order_relaxed);
     cold_1.store(c1, std::memory_order_relaxed);
     cold_3.store(c3, std::memory_order_relaxed);
@@ -1216,14 +1229,16 @@ void ColdPass(SparseRange& range, std::size_t slots) noexcept {
     cold_compress_ns.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - start).count()), std::memory_order_relaxed);
     const std::uint64_t sampled = cold_sampled_bytes.load(std::memory_order_relaxed);
-    char line[320];
+    char line[400];
     const int length = std::snprintf(line, sizeof(line),
         "EDEN_CRAM_COLD own=%lluMiB unwritten_20s=%lluMiB unwritten_60s=%lluMiB unwritten_120s=%lluMiB "
-        "lz4_sampled=%lluMiB lz4_ratio=%.3f lz4_ms=%llu\n",
+        "lz4_sampled=%lluMiB lz4_ratio=%.3f lz4_ms=%llu zero_sampled=%lluMiB zero_unwritten_60s=%lluMiB\n",
         (unsigned long long)(own * 2), (unsigned long long)(c1 * 2), (unsigned long long)(c3 * 2),
         (unsigned long long)(c6 * 2), (unsigned long long)(sampled >> 20),
         sampled ? double(cold_compressed_bytes.load(std::memory_order_relaxed)) / double(sampled) : 0.0,
-        (unsigned long long)(cold_compress_ns.load(std::memory_order_relaxed) / 1000000));
+        (unsigned long long)(cold_compress_ns.load(std::memory_order_relaxed) / 1000000),
+        (unsigned long long)(cold_zero.load(std::memory_order_relaxed) * 2),
+        (unsigned long long)(cold_zero_old.load(std::memory_order_relaxed) * 2));
     if (length > 0) Report(line);
 }
 
