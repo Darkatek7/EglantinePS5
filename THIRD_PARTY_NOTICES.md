@@ -99,7 +99,7 @@ builds on the following projects, each under its own license.
   motor fallback (`headless/pad_haptics.*`, its wiring in `headless/pad.cpp`
   and its host checks), the vibration strength setting, and the decoding of
   the Switch 2 vibration batches (HID command 214,
-  `tools/eglantine-patches/0038-switch2-vibration-values.patch`) are adapted
+  `tools/eglantine-patches/0039-switch2-vibration-values.patch`) are adapted
   from ProsperoEden.
 - **[ProsperoPuzzles](https://github.com/blackbearreloaded/ProsperoPuzzles)**,
   GPL-3.0-or-later. The launcher's drawing, text, animation and sound code
