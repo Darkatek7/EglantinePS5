@@ -2,6 +2,7 @@
 #include <atomic>
 #include "performance.h"
 #include "crash_report.h"
+#include "hud.h"
 #include "stall_watchdog.h"
 #include "../src/fastmem.h"
 #include "common/cpu_features.h"
@@ -984,6 +985,36 @@ void SampleCpu(unsigned core, unsigned long long thread, unsigned long long pc, 
         compilation[core].nanoseconds.load(std::memory_order_relaxed)};
     std::lock_guard lock(workers_mutex);
     cpu_samples[core] = sample;
+}
+
+unsigned BusiestGuestCore() {
+    // A core's CPU time can only be read by its own thread on the console, so each call asks the
+    // cores for a fresh reading (SampleCpu writes one when a core next leaves the guest's code) and
+    // sets each core's newest reading against the one the previous call saw. A core that wrote
+    // nothing since then is left out rather than counted as idle, as Snapshot leaves it.
+    struct Reading { long long mono = 0, cpu = 0; };
+    static std::array<Reading, kGuestCores> seen{};
+    std::array<CpuSample, kGuestCores> samples;
+    {
+        std::lock_guard lock(workers_mutex);
+        std::copy_n(cpu_samples.begin(), kGuestCores, samples.begin());
+    }
+    sample_epoch.fetch_add(1, std::memory_order_relaxed);  // the next readings, please
+    unsigned busiest = ~0u;
+    for (unsigned i = 0; i < kGuestCores; ++i) {
+        const CpuSample& sample = samples[i];
+        Reading& reading = seen[i];
+        if (sample.epoch == ~0u || sample.cpu_ns < 0) {
+            reading = {};
+            continue;
+        }
+        if (reading.mono != 0 && sample.mono_ns > reading.mono) {
+            const unsigned load = HudPercent(sample.cpu_ns - reading.cpu, sample.mono_ns - reading.mono);
+            busiest = busiest == ~0u ? load : std::max(busiest, load);
+        }
+        reading = {sample.mono_ns, sample.cpu_ns};
+    }
+    return busiest;
 }
 
 void Snapshot() {
