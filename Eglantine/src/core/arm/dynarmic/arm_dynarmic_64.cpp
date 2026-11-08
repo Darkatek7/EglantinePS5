@@ -562,6 +562,9 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         // Block links go through the JitGroup (jit_group.h), whose sites are 5/6-byte rel32 jumps
         // already; dynarmic's own patch sites, which this option compacts, are not used.
 #endif // PS5
+        // Halt checks on links to lower PCs and on indirect branches instead of every linked
+        // branch (multicore only: dynarmic counts no cycles there).
+        config.halt_check_on_back_edges = !config.enable_cycle_counting;
     }
 #endif
     m_jit.emplace(config);

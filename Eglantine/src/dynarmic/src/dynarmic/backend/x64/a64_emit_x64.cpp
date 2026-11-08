@@ -230,11 +230,21 @@ void A64EmitX64::GenTerminalHandlers() {
         code.or_(rbx, rcx);
     };
 
+    // With halt_check_on_back_edges forward links skip the halt check, so indirect branches
+    // (the PC is already stored) take it.
+    const auto check_halt = [this] {
+        if (conf.halt_check_on_back_edges && !conf.enable_cycle_counting) {
+            code.cmp(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+            code.jne(code.GetForceReturnFromRunCodeAddress());
+        }
+    };
+
     Xbyak::Label fast_dispatch_cache_miss;
     Xbyak::Label rsb_cache_miss;
 
     code.align();
     terminal_handler_pop_rsb_hint = code.getCurr<const void*>();
+    check_halt();
     calculate_location_descriptor();
     code.mov(eax, dword[code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)]);
     code.sub(eax, 1);
@@ -253,6 +263,7 @@ void A64EmitX64::GenTerminalHandlers() {
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
         code.align();
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+        check_halt();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
         code.mov(r8, qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_fast_dispatch)]);
@@ -752,10 +763,20 @@ void EdenEmitLink(A64EmitX64& e, IR::LocationDescriptor next, EdenLinkCheck chec
                                            check == EdenLinkCheck::None ? JitGroup::SiteKind::Rel32At1 : JitGroup::SiteKind::Rel32At2}});
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
+// A link to a higher guest PC cannot close a loop on its own: every cycle of blocks contains a
+// link to the same or a lower start PC, or an indirect branch, and those check for a halt.
+bool IsForwardLink(const A64EmitX64& e, const IR::LocationDescriptor& next, const IR::LocationDescriptor& initial_location) {
+    return e.conf.halt_check_on_back_edges && !e.conf.enable_cycle_counting &&
+           A64::LocationDescriptor{next}.PC() > A64::LocationDescriptor{initial_location}.PC();
+}
+
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     // Used for patches and linking
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        EdenEmitLink(e, terminal.next, e.conf.enable_cycle_counting ? EdenLinkCheck::Cycles : EdenLinkCheck::Halt);
+        EdenEmitLink(e, terminal.next,
+                     e.conf.enable_cycle_counting                          ? EdenLinkCheck::Cycles
+                     : IsForwardLink(e, terminal.next, initial_location) ? EdenLinkCheck::None
+                                                                           : EdenLinkCheck::Halt);
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
@@ -764,9 +785,14 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
     return true;
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        EdenEmitLink(e, terminal.next, EdenLinkCheck::None);
+        // Unchecked before; with halt_check_on_back_edges a back edge checks for a halt.
+        EdenEmitLink(e, terminal.next,
+                     e.conf.halt_check_on_back_edges && !e.conf.enable_cycle_counting &&
+                             !IsForwardLink(e, terminal.next, initial_location)
+                         ? EdenLinkCheck::Halt
+                         : EdenLinkCheck::None);
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
