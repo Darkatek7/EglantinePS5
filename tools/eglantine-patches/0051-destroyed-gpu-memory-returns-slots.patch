@@ -1,0 +1,113 @@
+Switch 2: GPU memory the game destroys (nx2:gpu 102) gives its whole 2 MiB slots back to the pool.
+
+The game frees the memory and reuses it as ordinary heap, so its data is dead. The physically
+contiguous runs of the destroyed range that hold whole 2 MiB slots go back through the guest memory
+service (Common::GuestMemoryFreed, as kernel frees do) once the GPU is past them and before the job's
+event lets the game reuse the memory; the game reads zeros there until it writes again.
+EDEN_NX2_DESTROY_RETURN=0 keeps the slots held. A warning line every 256 MiB destroyed
+(NX2_DESTROY_RETURN) counts what went back. Mario Kart World destroys ~270 MiB a session this way.
+
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -44,6 +44,9 @@
+ #include "core/core_timing.h"
+ #include "core/hle/kernel/k_client_session.h"
+ #include "core/hle/kernel/k_process.h"
++namespace Common {
++void GuestMemoryFreed(std::uint64_t offset, std::size_t bytes) noexcept;
++}
+ #include "core/hle/kernel/kernel.h"
+ #include "core/hle/kernel/k_system_resource.h"
+ #include "core/hle/kernel/k_memory_manager.h"
+@@ -572,6 +575,59 @@
+         GpuCommands::Run(system.GPU(), [this, event] { event->Signal(system.Kernel()); });
+     }
+ 
++    // The physically contiguous runs of [address, +size), as offsets into the console's memory, that
++    // hold at least one whole 2 MiB slot (EDEN_NX2_DESTROY_RETURN=0: none, the slots stay held).
++    std::vector<std::pair<u64, u64>> DestroyedRuns(u64 address, u64 size) {
++        static const bool on = [] {
++            const char* value = std::getenv("EDEN_NX2_DESTROY_RETURN");
++            return value == nullptr || value[0] != '0';
++        }();
++        std::vector<std::pair<u64, u64>> runs;
++        constexpr u64 Page = 0x1000, Slot = 2ULL << 20;
++        if (!on || size < Slot) {
++            return runs;
++        }
++        auto* const process = system.ApplicationProcess();
++        if (process == nullptr) {
++            return runs;
++        }
++        auto& table = process->GetPageTable();
++        u64 run_start = 0, run_bytes = 0;
++        const auto flush = [&] {
++            if (run_bytes >= Slot) {
++                runs.emplace_back(run_start, run_bytes);
++            }
++            run_bytes = 0;
++        };
++        for (u64 at = address & ~(Page - 1); at < address + size; at += Page) {
++            Kernel::KPhysicalAddress physical{};
++            if (!table.GetPhysicalAddress(std::addressof(physical), at) ||
++                GetInteger(physical) < Core::DramMemoryMap::Base) {
++                flush();
++                continue;
++            }
++            const u64 offset = GetInteger(physical) - Core::DramMemoryMap::Base;
++            if (run_bytes != 0 && offset == run_start + run_bytes) {
++                run_bytes += Page;
++            } else {
++                flush();
++                run_start = offset;
++                run_bytes = Page;
++            }
++        }
++        flush();
++        static std::atomic<u64> destroyed{0}, returned{0}, next_report{256ULL << 20};
++        u64 in_runs = 0;
++        for (const auto& run : runs) in_runs += run.second;
++        const u64 total = destroyed.fetch_add(size) + size;
++        returned.fetch_add(in_runs);
++        if (u64 next = next_report.load(); total >= next && next_report.compare_exchange_strong(next, next + (256ULL << 20))) {
++            LOG_WARNING(Service, "NX2_DESTROY_RETURN destroyed={} MiB in_whole_runs={} MiB", total >> 20,
++                        returned.load() >> 20);
++        }
++        return runs;
++    }
++
+     // Sub 102: word 2 is the memory handle 101 returned, word 3 the job slot. The game frees the
+     // memory (svc 0x80 clears GPU access) and reuses it as ordinary heap right after, so nothing
+     // on the GPU side may keep it: drop the mapping 101 made at its own address.
+@@ -586,13 +642,31 @@
+             }
+             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
+                       address, size, w[3]);
++            std::vector<std::pair<u64, u64>> runs;
+             if (size != 0) {
+                 Nvidia::Devices::Nx2GpuMemoryRegistry::Get().Unregister(address, size);
++                runs = DestroyedRuns(address, size);
+             }
+             if (size == 0x2000) {
+                 Tegra::Nx2RemoveSemaphoreRegion(address);
+             }
+             m_memory.erase(it);
++            // The memory goes back to the game's heap: its data is dead. Whole 2 MiB slots of it are
++            // given back to the pool (the game reads zeros there until it writes again) once the GPU
++            // is past it and before the job's event lets the game reuse it. Mario Kart World frees its
++            // title scene this way; Eden kept every slot of it held for the rest of the session.
++            if (!runs.empty()) {
++                auto* const event = EventFor(w[3]);
++                GpuCommands::Run(system.GPU(), [this, event, runs = std::move(runs)] {
++                    for (const auto& [offset, bytes] : runs) {
++                        ::Common::GuestMemoryFreed(offset, static_cast<std::size_t>(bytes));
++                    }
++                    event->Signal(system.Kernel());
++                });
++                IPC::ResponseBuilder rb{ctx, 2};
++                rb.Push(ResultSuccess);
++                return;
++            }
+         } else {
+             LOG_WARNING(Service, "nx2:gpu 102 destroy of unknown handle {}", handle);
+         }

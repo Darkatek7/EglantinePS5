@@ -1044,7 +1044,16 @@ bool PackEnabled() noexcept {
     return on;
 }
 constexpr std::size_t PackPerPass = 256;                       // 512 MiB of slots
-constexpr std::size_t PackBelowLargest = std::size_t{1536} << 20;
+// EDEN_CRAM_PACK_BELOW_MIB / EDEN_CRAM_PACK_COLD_S: when packing starts (largest free block) and how long
+// a slot must stay unwritten (tuning; defaults 1536 MiB and 60 s).
+std::size_t EnvOr(const char* name, std::size_t fallback) noexcept {
+    const char* value = std::getenv(name);
+    return value != nullptr && *value ? static_cast<std::size_t>(std::strtoull(value, nullptr, 10)) : fallback;
+}
+std::size_t PackBelowLargest() noexcept {
+    static const std::size_t bytes = EnvOr("EDEN_CRAM_PACK_BELOW_MIB", 1536) << 20;
+    return bytes;
+}
 constexpr double PackMaxRatio = 0.6;
 std::vector<std::uint8_t> pack_times; // per slot, the scanner's: how often it was packed
 std::atomic<bool> pack_refused{false};
@@ -1064,7 +1073,7 @@ bool PoolShortForPacking() noexcept {
     std::size_t largest = 0;
     return total > 0 && &sceKernelAvailableDirectMemorySize != nullptr &&
            sceKernelAvailableDirectMemorySize(0, total, SparseSlot, &start, &largest) == 0 &&
-           largest < PackBelowLargest;
+           largest < PackBelowLargest();
 #else
     return false;
 #endif
@@ -1141,7 +1150,12 @@ bool ColdReport() noexcept {
     }();
     return on;
 }
-constexpr std::size_t ColdSeconds = 60, ColdSamples = 24;
+constexpr std::size_t ColdSamples = 24;
+std::size_t ColdSecondsNow() noexcept {
+    static const std::size_t seconds = EnvOr("EDEN_CRAM_PACK_COLD_S", 60);
+    return seconds;
+}
+#define ColdSeconds ColdSecondsNow()
 std::vector<std::uint64_t> cold_hash;
 std::vector<std::uint32_t> cold_since; // per Own slot: when its hash last changed (s, steady clock)
 std::uint32_t ColdNow() noexcept {
