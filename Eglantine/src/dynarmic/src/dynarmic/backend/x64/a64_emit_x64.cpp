@@ -110,6 +110,9 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block, bool publish) noe
     code.align();
     const auto* const entrypoint = code.getCurr();
     eden_checkbit_mark = nullptr;
+    code.nzcv_flags_pos = nullptr;
+    code.nzcv_live_pos = nullptr;
+    check_bit_in_zf = false;
     emitting_block = true;
     pending_exit_stubs.clear();
     // EglantinePS5's frame_once sets %rbp once in the dispatcher prologue (block_of_code.cpp);
@@ -172,12 +175,21 @@ finish_this_inst:
     }
 
     reg_alloc.AssertNoMoreUses();
-    if (conf.enable_cycle_counting)
+    if (conf.enable_cycle_counting) {
         EmitAddCycles(block.CycleCount());
+        code.nzcv_live_pos = nullptr;
+    }
     if (!eden_jit_frame_once && !conf.omit_block_frame) {
+        // mov leaves the flags alone.
+        const bool flags_live = code.nzcv_live_pos == code.getCurr();
         code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+        if (flags_live)
+            code.nzcv_live_pos = code.getCurr();
     }
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
+    code.nzcv_flags_pos = nullptr;
+    code.nzcv_live_pos = nullptr;
+    check_bit_in_zf = false;
     code.int3();
     const bool far_code = code.HasFarCode();
     if (far_code) {
@@ -366,6 +378,14 @@ void A64EmitX64::EmitPushRSB(EmitContext& ctx, IR::Inst* inst) {
 void A64EmitX64::EmitA64SetCheckBit(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Reg8 to_store = ctx.reg_alloc.UseGpr(code, args[0]).cvt8();
+    // Last instruction of a CheckBit block: only flag-neutral code (the %rbp restore) follows
+    // before the terminal, so the bit can travel in ZF instead of the stack slot.
+    if (conf.reuse_host_flags && !conf.enable_cycle_counting && &*ctx.block.instructions.rbegin() == inst &&
+        std::holds_alternative<IR::Term::CheckBit>(ctx.block.GetTerminal())) {
+        code.test(to_store, to_store);
+        check_bit_in_zf = true;
+        return;
+    }
     code.mov(code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], to_store);
     eden_checkbit_mark = nullptr;
     if (__atomic_load_n(&eden_checkbit_flags, __ATOMIC_RELAXED)) {
@@ -419,9 +439,14 @@ void A64EmitX64::EmitA64SetNZCVRaw(A64EmitContext& ctx, IR::Inst* inst) {
 }
 
 void A64EmitX64::EmitA64SetNZCV(A64EmitContext& ctx, IR::Inst* inst) {
+    // Stored right after the Add/Sub that set it (nothing emitted in between): the host flags
+    // stay equal to the stored NZCV until the next flag-changing instruction.
+    const bool flags_live = conf.reuse_host_flags && code.nzcv_flags_pos != nullptr && code.nzcv_flags_pos == code.getCurr() &&
+                            !inst->GetArg(0).IsImmediate() && code.nzcv_flags_inst == static_cast<const void*>(inst->GetArg(0).GetInst());
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Reg32 to_store = ctx.reg_alloc.UseScratchGpr(code, args[0]).cvt32();
     code.mov(dword[code.ABI_JIT_PTR + offsetof(A64JitState, cpsr_nzcv)], to_store);
+    code.nzcv_live_pos = flags_live ? code.getCurr() : nullptr;
 }
 
 void A64EmitX64::EmitA64GetW(A64EmitContext& ctx, IR::Inst* inst) {
@@ -491,6 +516,8 @@ void A64EmitX64::EmitA64GetFPSR(A64EmitContext& ctx, IR::Inst* inst) {
 }
 
 void A64EmitX64::EmitA64SetW(A64EmitContext& ctx, IR::Inst* inst) {
+    // Only movs below: live host flags stay live.
+    const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr();
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const A64::Reg reg = inst->GetArg(0).GetA64RegRef();
     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
@@ -502,9 +529,12 @@ void A64EmitX64::EmitA64SetW(A64EmitContext& ctx, IR::Inst* inst) {
         code.mov(to_store.cvt32(), to_store.cvt32());
         code.mov(addr, to_store);
     }
+    if (flags_live)
+        code.nzcv_live_pos = code.getCurr();
 }
 
 void A64EmitX64::EmitA64SetX(A64EmitContext& ctx, IR::Inst* inst) {
+    const bool flags_live = code.nzcv_live_pos != nullptr && code.nzcv_live_pos == code.getCurr();
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const A64::Reg reg = inst->GetArg(0).GetA64RegRef();
     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
@@ -517,6 +547,8 @@ void A64EmitX64::EmitA64SetX(A64EmitContext& ctx, IR::Inst* inst) {
         const Xbyak::Reg64 to_store = ctx.reg_alloc.UseGpr(code, args[1]);
         code.mov(addr, to_store);
     }
+    if (flags_live)
+        code.nzcv_live_pos = code.getCurr();
 }
 
 void A64EmitX64::EmitA64SetS(A64EmitContext& ctx, IR::Inst* inst) {
@@ -857,7 +889,10 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::CheckBit terminal, IR::LocationDe
     const unsigned char* const mark = eden_checkbit_mark;
     eden_checkbit_mark = nullptr;
     // With the frame pointer set once per entry (jit_frame_once) nothing follows the setter at all.
-    if ((mark && eden_jit_frame_once && e.code.getCurr() == mark) ||
+    if (e.check_bit_in_zf) {
+        // EmitA64SetCheckBit left `test bit, bit`: ZF set means the bit is clear.
+        e.check_bit_in_zf = false;
+    } else if ((mark && eden_jit_frame_once && e.code.getCurr() == mark) ||
         (restore_layout && mark && e.code.getCurr() == mark + sizeof(restore_rbp) &&
          std::memcmp(mark, restore_rbp, sizeof(restore_rbp)) == 0)) {
         __atomic_fetch_add(&eden_checkbit_fused, 1, __ATOMIC_RELAXED);
