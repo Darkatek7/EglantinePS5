@@ -1086,10 +1086,13 @@ bool ScanShare(SparseRange& range, std::size_t keep, std::size_t other) noexcept
 // each scan pass packs up to PackPerPass slots unwritten for ColdSeconds or more, the
 // coldest first. A slot packed before waits twice as many passes each time (it came back), and
 // one that does not compress to PackMaxRatio is left as it is.
+// Off unless EDEN_CRAM_PACK=1: with packing, Mario Kart World's emulated GPU read garbage (draws of
+// 1.8-2.9 billion indices) and the GPU hung in sessions that packed, which none did without it;
+// some path reads the game's memory without faulting on a packed slot (docs/MKW-MEMORY-LEAK.md).
 bool PackEnabled() noexcept {
     static const bool on = [] {
         const char* value = std::getenv("EDEN_CRAM_PACK");
-        return (value == nullptr || value[0] != '0') && &LZ4_compress_default != nullptr &&
+        return value != nullptr && value[0] == '1' && &LZ4_compress_default != nullptr &&
                &LZ4_decompress_safe != nullptr && &LZ4_compressBound != nullptr;
     }();
     return on;

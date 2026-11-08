@@ -122,43 +122,54 @@ fit.
 
 ## Fixed (branch fix/mkw-memory-leaks)
 
-### Packing no longer hangs the GPU
+### The race-load "out of memory" was one impossible index buffer (core patch 0051)
 
-Every GPU hang in these runs ("the GPU has not reached submission N in 10 s", then
-`VK_ERROR_DEVICE_LOST`, and several times the console dropping off the network) came seconds after
-a packing burst: 0.4–1.5 GB of cold game memory packed while the pool was short. The next reads
-of those slots fault, and an unpack needs a fresh 2 MiB block. With the pool short there was none
-(the 128 MiB reserve emptied after 64), so each read waited in its fault handler for up to 2 s.
-Dozens of those stalled the threads the GPU's work waits on. Packing earlier
-(`EDEN_CRAM_PACK_BELOW_MIB=4096`, `EDEN_CRAM_PACK_COLD_S=20`) hung the GPU at 131 s. These hangs,
-not the transfer split PR #77 dropped, were what hung MKW's GPU.
+What ended 1x sessions as the race loaded was not the gradual growth above but a single request.
+Switch 2 titles leave the index limit at 0, and the count/first registers sometimes hold values no
+draw uses (1.4–2.9 billion indices). The 32-bit span arithmetic wrapped to a 1.3–2.9 GB "index
+buffer"; the buffer cache merged up to 101 buffers into it, RADV built it from up to 1,372 2 MiB
+pieces, and a staging buffer of the same size was asked for at once ("recover asked=2768MiB"). The
+pool ran out on the spot, even with 2.4 GB free.
 
-Fix: the blocks packing frees are kept, up to 256 MiB (`EDEN_CRAM_UNPACK_KEEP_MIB`), for unpacking
-only. An unpack takes a pool block, then a kept one, then the reserve. MKW 1x, title into a race,
-4 runs: packing compressed up to **3.5 GB** with up to 206 unpacks and **no GPU hang**. Before
-this, about 9 of roughly 25 packing runs hung. The sessions now end with a normal
-out-of-memory report (181 and 211 s), and the console stays up.
+Core patch 0051 works out the span in 64 bits, treats an index limit below the start as no
+bound, caps an index binding at 128 MiB, and drops an indexed draw whose indices reach past the
+cap. Capping alone was not enough: run on the GPU, a 559 million index draw kept the queue past
+the driver's 10 s limit and the device was lost.
 
-### Destroyed GPU memory goes back to the pool
+### Packing is off by default (`EDEN_CRAM_PACK=1` turns it on)
 
-Core patch 0051: when the game destroys GPU memory (nx2:gpu 102) and reuses it as heap, the
-destroyed range's whole 2 MiB slots are given back (`EDEN_NX2_DESTROY_RETURN=0` keeps them). It
-works (219 MiB returned in a session), but MKW frees only ~270 MiB a session this way, so it does
-not change how long the game lasts.
+Every GPU hang ("the GPU has not reached submission N in 10 s", then `VK_ERROR_DEVICE_LOST`, and
+several times the console dropping off the network) came in a session that packed, seconds after a
+packing burst. The impossible draws above came only in sessions that packed (none in the
+packing-off runs). Some path reads the game's memory without faulting on a packed slot, so the
+emulated GPU read garbage. Keeping packing's freed blocks for unpacking
+(`EDEN_CRAM_UNPACK_KEEP_MIB`, default 256) removed the waits on unpacks (3.5 GB packed, 206
+unpacks, no hang in 4 runs), but a later run still hung after a 506 MiB pass with 3 unpacks. So
+packing stays off until it skips memory the GPU path uses. The keep and the tunables
+`EDEN_CRAM_PACK_BELOW_MIB` / `EDEN_CRAM_PACK_COLD_S` stay for when it is turned on.
 
-### Tunables
+### Tried and dropped: giving back destroyed GPU memory
 
-`EDEN_CRAM_PACK_BELOW_MIB` (default 1536) and `EDEN_CRAM_PACK_COLD_S` (default 60) set when
-packing starts and how long a slot must stay unwritten.
+Returning the whole 2 MiB slots of GPU memory the game destroys (nx2:gpu 102) freed only ~219 MiB
+a session, and the game still reads some of that memory. With it, sessions died of guest faults
+("ActorLoading", "ARes Loading N jumped to an unmapped address": 1 of 2 runs, and 2 of 2 in
+another set); without it, 0 of 2.
+
+## Result
+
+MKW 1x, title into a race, on the final build (packing off, patch 0051):
+
+| Runs | Length | Result |
+|---|---|---|
+| 4 | 240 s | all ran the full 240 s (no out-of-memory, no GPU hang; the guest fault only in the runs that gave back destroyed memory) |
+| 2 | 330 s | ended at 241 s and 292 s, the pool exhausted (largest free block 2–16 MiB, game memory 6.0–6.2 GB, Eden's heap 1.7 GB) |
+
+Before: every 1x session that reached the race load ended within 131–211 s, by out-of-memory
+(the impossible buffer), a GPU hang (packing), or a guest fault.
 
 ## Still open
 
-- **Pool exhaustion at 1x.** The game's memory (5.5–6 GB, legitimately used from its 9.5 GB
-  heap), Eden's GPU copies (3–4.5 GB) and Eden's heap (1.5–1.8 GB) still don't fit. Packing is
-  the lever that works now that it is safe. Starting it earlier is the next experiment.
-- **Race-load guest fault.** "ARes Loading N" or "WorkerMgr/Worker1" jumps to an unmapped address
-  (a null or garbage pointer) while the race loads, in 4 of 7 runs at 1x, with packing on or off,
-  with no refused write and no failed allocation. This is the bug PR #76 parked, and it now ends
-  more sessions than memory does.
+- **The game's memory and Eden's copies still fill the pool.** At 240 s the largest free block is
+  12–337 MiB, with 5.7–6.2 GB of game memory held. Making packing safe is the way to give that back.
 - Findings 2–4 above (scattered free memory, the collector's double count, heap growth) are
   unchanged.
