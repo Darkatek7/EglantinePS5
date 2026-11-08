@@ -56,6 +56,18 @@ enum VideoRow : int
     video_filter,
     video_refresh,
     video_overlay,
+    // The overlay's look: its size and corner, then a switch for each field of its line, in the
+    // order of hud.h's kHudField* bits (the renderer is bit 0).
+    video_overlay_size,
+    video_overlay_corner,
+    video_overlay_backend,
+    video_overlay_fps,
+    video_overlay_ms,
+    video_overlay_speed,
+    video_overlay_cpu,
+    video_overlay_gpu,
+    video_overlay_memory,
+    video_overlay_ping,
     // Frame generation: not shown in a build without it (Services::frame_gen_state).
     video_frame_gen,
     video_frame_gen_type,
@@ -65,6 +77,16 @@ enum VideoRow : int
 };
 constexpr int kFrameGenTargets = 6;     // Auto, 60, 90, 120, 144, 240 Hz (settings_store.h)
 constexpr int kFrameGenMultipliers = 3; // 2x, 3x, 4x
+constexpr int kHudSizes = 3;            // 1x, 1.5x, 2x (settings_store.h, kHudSizeKeys)
+constexpr int kHudCorners = 4;          // settings_store.h, kHudCornerKeys
+constexpr const char *kHudSizeNames[kHudSizes] = {TR("Regular"), TR("Medium"), TR("Large")};
+constexpr const char *kHudCornerNames[kHudCorners] = {TR("Top left"), TR("Top right"), TR("Bottom left"),
+                                                      TR("Bottom right")};
+// The overlay field a Video row switches, as its bit in Preferences::hud_fields; 0 for other rows.
+constexpr int hud_field_bit(int row)
+{
+    return row >= video_overlay_backend && row <= video_overlay_ping ? 1 << (row - video_overlay_backend) : 0;
+}
 constexpr float kVideoRowsTop = 334.0f;
 constexpr float kVideoRowPitch = 96.0f;
 constexpr float kVideoRowHeight = 94.0f;
@@ -540,6 +562,12 @@ void Launcher::press_dialog(Key key)
         }
         else if (option_ == video_refresh)
             prefs_.refresh = prefs_.refresh != 0 ? 0 : 1;
+        else if (option_ == video_overlay_size)
+            prefs_.hud_size = (std::clamp(prefs_.hud_size, 0, kHudSizes - 1) + step + kHudSizes) % kHudSizes;
+        else if (option_ == video_overlay_corner)
+            prefs_.hud_corner = (std::clamp(prefs_.hud_corner, 0, kHudCorners - 1) + step + kHudCorners) % kHudCorners;
+        else if (const int bit = hud_field_bit(option_))
+            prefs_.hud_fields ^= bit;
         else if (option_ == video_frame_gen_type)
             prefs_.frame_gen_type =
                 (std::clamp(prefs_.frame_gen_type, 0, kFrameGenTypes - 1) + step + kFrameGenTypes) % kFrameGenTypes;
@@ -722,6 +750,9 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
             pick(services_.filter_labels(), prefs_.filter),
             hertz(prefs_.refresh),
             std::string{}, // FPS overlay: a switch
+            tr(kHudSizeNames[std::clamp(prefs_.hud_size, 0, kHudSizes - 1)]),
+            tr(kHudCornerNames[std::clamp(prefs_.hud_corner, 0, kHudCorners - 1)]),
+            {}, {}, {}, {}, {}, {}, {}, {}, // the overlay's fields: switches
             on_off(prefs_.frame_gen),
             kFrameGenTypeNames[std::clamp(prefs_.frame_gen_type, 0, kFrameGenTypes - 1)],
             prefs_.frame_gen_target <= 0 ? std::string{tr("Auto")} :
@@ -732,6 +763,10 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
         static constexpr const char *kNames[kVideoRows] = {
             TR("Renderer"),         TR("Output resolution"), TR("Resolution"),
             TR("Upscaling filter"), TR("Refresh rate"),      TR("FPS overlay"),
+            TR("Overlay size"),     TR("Overlay corner"),    TR("Overlay: renderer"),
+            TR("Overlay: FPS"),     TR("Overlay: worst frame"), TR("Overlay: speed"),
+            TR("Overlay: CPU"),     TR("Overlay: GPU"),      TR("Overlay: free memory"),
+            TR("Overlay: ping"),
             TR("Frame generation"), TR("Frame gen type"),    TR("Frame gen target"),
             TR("Frame gen multiplier")};
         for (int row = first; row <= last; ++row)
@@ -741,6 +776,12 @@ void Launcher::draw_dialog(Canvas &c, Modal modal, float open)
             {
                 label(row, tr(kNames[row]), kToggle);
                 toggle(c, 1292.0f, row_centre(row), knob);
+            }
+            else if (const int bit = hud_field_bit(row))
+            {
+                // One field of the overlay's line, on or off.
+                label(row, tr(kNames[row]), kToggle);
+                toggle(c, 1292.0f, row_centre(row), (prefs_.hud_fields & bit) != 0 ? 1.0f : 0.0f);
             }
             else if (row >= video_frame_gen && row != video_frame_gen_type && locked_frame_gen)
             {

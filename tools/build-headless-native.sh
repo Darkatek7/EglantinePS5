@@ -129,4 +129,5 @@ if [[ "$graphics" == ON ]]; then
 fi
 
 python3 -B tools/check-hud.py
+python3 -B tools/check-hud-mask.py
 python3 -B tools/check-game-frame-summary.py

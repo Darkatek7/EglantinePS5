@@ -1,10 +1,10 @@
-        // The overlay is laid out for a picture 1080 rows high and scaled to this one.
-        const auto hud_units = [rows = render_area.height](uint32_t value) { return value * rows / 1080u; };
-        if (hud.width && (hud.loading || (render_area.width >= hud_units(hud.width + 16) &&
-                                          render_area.height >= hud_units(64)))) {
+        // The overlay's box, against the corner and at the size the settings name, laid out for a
+        // picture 1080 rows high and scaled to this one (hud.h, PlaceHud).
+        const auto hud_place = Eden::PlaceHud(hud, render_area.width, render_area.height);
+        if (hud.width && (hud.loading || hud_place.shown)) {
             const VkRect2D scissor = hud.loading ? VkRect2D{{0, 0}, render_area} :
-                VkRect2D{{static_cast<int32_t>(hud_units(16)), static_cast<int32_t>(hud_units(16))},
-                         {hud_units(hud.width), hud_units(48)}};
+                VkRect2D{{static_cast<int32_t>(hud_place.box_x), static_cast<int32_t>(hud_place.box_y)},
+                         {hud_place.box_w, hud_place.box_h}};
             const VkViewport viewport{static_cast<float>(scissor.offset.x), static_cast<float>(scissor.offset.y),
                 static_cast<float>(scissor.extent.width), static_cast<float>(scissor.extent.height), 0, 1};
             cmdbuf.SetViewport(0, viewport);
@@ -16,10 +16,10 @@
                 constants.x = render_area.width;
                 constants.y = render_area.height;
             } else {
-                // Where the text starts in this picture, and the picture's height for its size.
-                constants.x = hud_units(hud.x);
-                constants.y = hud_units(hud.y);
-                constants.width = render_area.height;
+                // Where the text starts in this picture, and the rows its cells are laid out for.
+                constants.x = hud_place.text_x;
+                constants.y = hud_place.text_y;
+                constants.width = hud_place.cell_rows;
             }
             cmdbuf.PushConstants(hud_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, constants);
             cmdbuf.Draw(4, 1, 0, 0);

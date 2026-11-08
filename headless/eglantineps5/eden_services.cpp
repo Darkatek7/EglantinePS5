@@ -1270,6 +1270,10 @@ bool EdenServices::set_docked(std::uint64_t title_id, bool docked) {
 static_assert(pe::ui::kGameButtons == Eden::kGameButtons && pe::ui::kPadButtons == Eden::kPadButtons &&
               pe::ui::kDefaultMapping == Eden::kDefaultMapping, "the launcher's button mapping differs");
 static_assert(std::tuple_size_v<decltype(pe::ui::GameSettings::performance)> == Eden::kPerformanceSwitches);
+// The launcher's overlay rows walk the field bits in order and its sizes and corners by index.
+static_assert(pe::ui::Preferences{}.hud_fields == static_cast<int>(Eden::kHudFieldDefault) &&
+              Eden::kHudFieldCount == 8 && Eden::kHudSizes == 3 && Eden::kHudCorners == 4,
+              "the launcher's FPS overlay options differ");
 
 pe::ui::GameSettings EdenServices::game_settings(std::uint64_t title_id) {
     const Eden::GameSettings saved = Eden::LoadGameSettings(title_id);
@@ -1324,6 +1328,9 @@ pe::ui::Preferences EdenServices::preferences() {
     const Eden::Preferences saved = Eden::LoadPreferences();
     pe::ui::Preferences result;
     result.hud = saved.hud;
+    result.hud_fields = saved.hud_fields;
+    result.hud_size = saved.hud_size;
+    result.hud_corner = saved.hud_corner;
     result.volume = saved.volume;
     result.mute = saved.mute;
     result.detailed_logging = saved.detailed_logging;
@@ -1359,6 +1366,9 @@ pe::ui::Preferences EdenServices::preferences() {
 bool EdenServices::set_preferences(const pe::ui::Preferences& preferences) {
     Eden::Preferences value;
     value.hud = preferences.hud;
+    value.hud_fields = preferences.hud_fields;
+    value.hud_size = preferences.hud_size;
+    value.hud_corner = preferences.hud_corner;
     value.volume = preferences.volume;
     value.mute = preferences.mute;
     value.detailed_logging = preferences.detailed_logging;

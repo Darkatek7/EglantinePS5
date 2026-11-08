@@ -945,7 +945,7 @@ adapt('src/video_core/renderer_vulkan/vk_scheduler.cpp', 'vulkan_scheduler.cpp',
     ('        work_queue.pop();\n        event_cv.notify_all();',
      '        work_queue.pop();\n        if (!eden_vulkan_handoff_enabled() || (work_queue.empty() && drain_waiters)) drain_cv.notify_all();'),
 
-    ('#include <memory>', '#include <memory>\n#include <array>\n#include <chrono>\n#include <cstdio>\n#include "dev_vulkan.h"\n#include "submission_origin.h"\nextern "C" bool eden_vulkan_handoff_enabled();'),
+    ('#include <memory>', '#include <memory>\n#include <array>\n#include <chrono>\n#include <cstdio>\n#include "dev_vulkan.h"\n#include "hud_gpu_time.h"\n#include "submission_origin.h"\nextern "C" bool eden_vulkan_handoff_enabled();'),
     ('namespace Vulkan {\n', 'namespace Vulkan {\n' + GPU_TIME_HELPERS),
     ('        .pInheritanceInfo = nullptr,\n    });\n}\n\nu64 Scheduler::SubmitExecution(',
      '        .pInheritanceInfo = nullptr,\n    });\n    GpuTimeBegin(device, current_upload_cmdbuf);\n}\n\nu64 Scheduler::SubmitExecution('),

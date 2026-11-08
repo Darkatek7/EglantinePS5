@@ -3,7 +3,8 @@
 //
 //   {
 //     "version": 1,
-//     "video": { "renderer": "vulkan", "fps_overlay": true, "resolution": "1x",
+//     "video": { "renderer": "vulkan", "fps_overlay": true, "fps_overlay_size": "regular",
+//                "fps_overlay_corner": "top_left", "fps_overlay_fields": 207, "resolution": "1x",
 //                "upscaling_filter": "bilinear", "refresh_rate": "60",
 //                "output_resolution": "1080p", "frame_gen": false,
 //                "frame_gen_target": "auto", "frame_gen_multiplier": "2" },
@@ -50,6 +51,7 @@
 #include <nlohmann/json.hpp>
 
 #include "button_mapping.h"
+#include "hud.h"
 #include "storage_paths.h"
 #include "multiplayer.h"
 
@@ -96,6 +98,12 @@ static_assert(std::size(kFrameGenMultiplierKeys) == std::size(kFrameGenMultiplie
 inline constexpr const char* kOutputKeys[] = {"1080p", "1440p", "2160p"};
 inline constexpr int kOutputWidth[] = {1920, 2560, 3840};
 inline constexpr int kOutputHeight[] = {1080, 1440, 2160};
+// Settings > Video: the FPS overlay's size and the corner of the picture it stands in, in the
+// launcher's order (hud.h, kHudSizes and kHudCorners). Its fields are saved as their bits
+// (hud.h, kHudField*), which ProsperoEden's launcher saves under the same name.
+inline constexpr const char* kHudSizeKeys[] = {"regular", "medium", "large"};
+inline constexpr const char* kHudCornerKeys[] = {"top_left", "top_right", "bottom_left", "bottom_right"};
+static_assert(std::size(kHudSizeKeys) == kHudSizes && std::size(kHudCornerKeys) == kHudCorners);
 // Settings > Language: the system language games see, in launcher order. Each entry maps to Eden's
 // Settings::Language and to the Settings::Region consoles sold with that language have (indices in
 // Eden's enum order; headless/main.cpp checks them). Eden's older "Chinese" and "Taiwanese" codes
@@ -133,6 +141,11 @@ struct Preferences {
     ButtonMapping mapping = kDefaultMapping;  // Settings > Controls > Button mapping
     int controller = -1;                 // a game's own Controller type (kControllerKeys); -1: automatic
     bool immediate_logs = false;         // Settings > Diagnostics: log lines written as they come
+    // Settings > Video: the FPS overlay's look. Last, so the lists that fill the fields above in
+    // order keep their meaning.
+    int hud_fields = static_cast<int>(kHudFieldDefault);  // what the overlay shows (hud.h, kHudField*)
+    int hud_size = 0;                    // index into kHudSizeKeys: 1x, 1.5x, 2x
+    int hud_corner = 0;                  // index into kHudCornerKeys: top left first
 };
 
 inline int KeyIndex(const std::string& value, const char* const* keys, int count, int fallback) {
@@ -332,6 +345,14 @@ inline Preferences LoadPreferences(const std::string& file = SettingsFile()) {
     const Json document = Settings::Load(file);
     Preferences result;
     result.hud = Settings::Bool(document, Json::json_pointer("/video/fps_overlay"), result.hud);
+    // A file from before there was a choice names none of these: the overlay then shows what it
+    // showed, with the free memory.
+    const int hud_fields = Settings::Int(document, Json::json_pointer("/video/fps_overlay_fields"), result.hud_fields);
+    if (ValidHudFields(hud_fields)) result.hud_fields = hud_fields;
+    result.hud_size = KeyIndex(Settings::String(document, Json::json_pointer("/video/fps_overlay_size")),
+                               kHudSizeKeys, int(std::size(kHudSizeKeys)), result.hud_size);
+    result.hud_corner = KeyIndex(Settings::String(document, Json::json_pointer("/video/fps_overlay_corner")),
+                                 kHudCornerKeys, int(std::size(kHudCornerKeys)), result.hud_corner);
     result.backend = Settings::String(document, Json::json_pointer("/video/renderer")) == "opengl" ?
         GraphicsBackend::OpenGL : GraphicsBackend::Vulkan;
     const int volume = Settings::Int(document, Json::json_pointer("/audio/volume"), result.volume);
@@ -380,11 +401,16 @@ inline bool SavePreferences(const Preferences& value, const std::string& file = 
         value.output < 0 || value.output >= int(std::size(kOutputKeys)) ||
         value.frame_gen_type < 0 || value.frame_gen_type >= int(std::size(kFrameGenTypeKeys)) ||
         value.language < 0 || value.language >= int(std::size(kLanguageKeys)) ||
+        !ValidHudFields(value.hud_fields) || value.hud_size < 0 || value.hud_size >= kHudSizes ||
+        value.hud_corner < 0 || value.hud_corner >= kHudCorners ||
         !ValidMapping(value.mapping)) return false;
     Settings::Json document = Settings::Load(file);
     document["version"] = 1;
     document["video"]["renderer"] = value.backend == GraphicsBackend::Vulkan ? "vulkan" : "opengl";
     document["video"]["fps_overlay"] = value.hud;
+    document["video"]["fps_overlay_fields"] = value.hud_fields;
+    document["video"]["fps_overlay_size"] = kHudSizeKeys[value.hud_size];
+    document["video"]["fps_overlay_corner"] = kHudCornerKeys[value.hud_corner];
     document["video"]["resolution"] = kResolutionKeys[value.resolution];
     document["video"]["upscaling_filter"] = kUpscalingFilterKeys[value.upscaling_filter];
     document["video"]["refresh_rate"] = kRefreshKeys[value.refresh];

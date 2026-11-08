@@ -54,6 +54,12 @@ enum class CpuPhase : unsigned { Kernel, Guest, Idle };
 struct alignas(64) CpuState { std::atomic<CpuPhase> phase{}; };
 inline std::array<CpuState, 6> cpu_state{};
 void SampleCpu(unsigned core, unsigned long long thread, unsigned long long pc, unsigned svc, unsigned fpcr);
+// The overlay's CPU field (hud.h, HudMachine::cpu): how busy the busiest emulated core was since
+// the previous call, as a percentage of one CPU; ~0u until two readings of a core are known, or
+// where the console's thread clocks cannot be read. A game is held back by its busiest core, which
+// a share of every CPU of the console would hide. Each call asks the cores for new readings, so
+// with the field off nothing more is read. One caller at a time (the overlay, once a second).
+unsigned BusiestGuestCore();
 struct alignas(64) Totals {
     std::atomic<unsigned long long> calls{}, nanoseconds{}, requested_bytes{};
 };

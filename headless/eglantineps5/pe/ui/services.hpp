@@ -285,6 +285,12 @@ struct Profile
 struct Preferences
 {
     bool hud = true;
+    // The FPS overlay's look: what its line shows (a bit per field, hud.h's kHudField*, from the
+    // renderer up to the ping), its size (0 1x, 1 1.5x, 2 2x) and corner (top left, top right,
+    // bottom left, bottom right).
+    int hud_fields = 0xcf; // all but CPU and GPU: settings_store.h's default
+    int hud_size = 0;
+    int hud_corner = 0;
     int volume = 100; // game volume, 0-100
     bool mute = false;
     bool detailed_logging = false;

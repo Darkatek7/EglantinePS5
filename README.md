@@ -333,7 +333,7 @@ The menu opens with the profile that the PS5 user in front chose last. If you us
 
 | Kind | What a game can have of its own |
 |---|---|
-| Video | Renderer, resolution, upscaling filter, refresh rate, FPS overlay, frame generation with its target and multiplier |
+| Video | Renderer, resolution, upscaling filter, refresh rate, FPS overlay (its size, corner and fields: renderer, FPS, worst frame, speed, busiest CPU core, GPU load, free memory, ping), frame generation with its target and multiplier |
 | Performance | Each of the seven switches |
 | Audio | Game volume, mute |
 | Controls | Vibration, and a button mapping of its own |

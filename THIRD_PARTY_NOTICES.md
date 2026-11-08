@@ -62,6 +62,10 @@ builds on the following projects, each under its own license.
   (`tools/patch-radv-transfer-split.py`) and keep dropped geometry-shader
   compute draws off null pointers (`tools/patch-radv-gs-compute.py`) are
   backported from ProsperoEden.
+  The FPS overlay's selectable fields, its size and corner settings and the
+  machine numbers it shows (busiest emulated core, GPU busy share from the
+  scheduler's timestamps, free memory) are adapted from ProsperoEden's overlay
+  (`headless/hud.h`, `headless/hud_gpu_time.h`, `headless/gpu_time_probe.inc`).
 - **[PS5 Mesa](https://github.com/mihawk-99/PS5_Mesa)** and
   **[PS5 Vulkan](https://github.com/mihawk-99/PS5_Vulkan)** by Mihawk. The
   RADV Vulkan driver (Mesa, mainly MIT) and its PS5 link recipe and platform

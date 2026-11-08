@@ -1,8 +1,9 @@
 namespace {
-// Development GPU execution time (dev_vulkan.h gpu_time): timestamps at the start and end
-// of each upload+graphics submission, summed once the GPU has run it and printed every
-// 5 s as EDEN_GPU_TIME. Probe/counters are worker-thread-only. Origin is captured on
-// the recording thread, then copied into the submission command.
+// GPU execution time: timestamps at the start and end of each upload+graphics submission, summed
+// once the GPU has run it. For development (dev_vulkan.h gpu_time) printed every 5 s as
+// EDEN_GPU_TIME; for the overlay's GPU field (hud_gpu_time.h) added to its totals while it shows
+// that field. Probe/counters are worker-thread-only. Origin is captured on the recording thread,
+// then copied into the submission command.
 using ::Eden::VulkanProbe::GpuSubmitOrigin;
 using ::Eden::VulkanProbe::gpu_submit_origin;
 using ::Eden::VulkanProbe::GpuSubmitOriginScope;
@@ -17,11 +18,22 @@ struct GpuTimeProbe {
     u64 busy_ns{}, max_ns{}, submissions{}, total_ns{}, total_submissions{};
     std::chrono::steady_clock::time_point report{};
     bool failed{};
+    // The submission being recorded has its first timestamp: its second is written even if the
+    // overlay stopped asking in between, so no slot waits for a result that never comes.
+    bool stamped{};
     struct OriginCount { GpuSubmitOrigin origin; u64 count{}; };
     std::array<OriginCount, 64> origins{};
     u32 origin_slots{};
     u64 origin_overflow{};
 } gpu_time;
+
+bool GpuTimeWanted() {
+    return ::Eden::DevVulkan::gpu_time || ::Eden::Hud::gpu_time_wanted.load(std::memory_order_relaxed);
+}
+void GpuTimeGaveUp() {
+    gpu_time.failed = true;
+    ::Eden::Hud::gpu_time_failed.store(true, std::memory_order_relaxed);
+}
 
 void GpuTimeCountOrigin(GpuSubmitOrigin origin) {
     if (!::Eden::DevVulkan::gpu_time || gpu_time.failed) return;
@@ -37,7 +49,8 @@ void GpuTimeCountOrigin(GpuSubmitOrigin origin) {
 }
 
 void GpuTimeBegin(const Device& device, vk::CommandBuffer cmdbuf) {
-    if (!::Eden::DevVulkan::gpu_time || gpu_time.failed) return;
+    gpu_time.stamped = false;
+    if (!GpuTimeWanted() || gpu_time.failed) return;
     if (!gpu_time.write) {
         const auto& dld = device.GetDispatchLoader();
         gpu_time.write = reinterpret_cast<PFN_vkCmdWriteTimestamp>(
@@ -46,7 +59,7 @@ void GpuTimeBegin(const Device& device, vk::CommandBuffer cmdbuf) {
         const auto families = device.GetPhysical().GetQueueFamilyProperties();
         if (device.GetGraphicsFamily() < families.size())
             gpu_time.valid_bits = families[device.GetGraphicsFamily()].timestampValidBits;
-        if (!gpu_time.write || gpu_time.period_ns <= 0 || !gpu_time.valid_bits || gpu_time.valid_bits > 64) { gpu_time.failed = true; return; }
+        if (!gpu_time.write || gpu_time.period_ns <= 0 || !gpu_time.valid_bits || gpu_time.valid_bits > 64) { GpuTimeGaveUp(); return; }
         gpu_time.pool = device.GetLogical().CreateQueryPool({
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
             .pNext = nullptr,
@@ -56,28 +69,32 @@ void GpuTimeBegin(const Device& device, vk::CommandBuffer cmdbuf) {
             .pipelineStatistics = 0,
         });
         gpu_time.report = std::chrono::steady_clock::now();
+        ::Eden::Hud::gpu_time_failed.store(false, std::memory_order_relaxed);  // a new device may work
         std::printf("EDEN_GPU_TIME_INIT period_ns=%.9f valid_bits=%u slots=%u\n",
                     gpu_time.period_ns, gpu_time.valid_bits, GpuTimeProbe::SLOTS);
         std::printf("EDEN_GPU_SUBMIT_ANCHOR address=%p coverage=upload+graphics\n",
                     reinterpret_cast<void*>(&GpuTimeCountOrigin));
     }
     if (gpu_time.next - gpu_time.first_pending >= GpuTimeProbe::SLOTS) {
-        gpu_time.failed = true; // results stopped arriving; never overwrite a pending slot
+        GpuTimeGaveUp(); // results stopped arriving; never overwrite a pending slot
         std::printf("EDEN_GPU_TIME failed=ring\n");
         return;
     }
     gpu_time.current = static_cast<u32>(gpu_time.next++ % GpuTimeProbe::SLOTS);
     cmdbuf.ResetQueryPool(*gpu_time.pool, gpu_time.current * 2, 2);
     gpu_time.write(*cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, *gpu_time.pool, gpu_time.current * 2);
+    gpu_time.stamped = true;
 }
 
 void GpuTimeEnd(vk::CommandBuffer cmdbuf) {
-    if (!::Eden::DevVulkan::gpu_time || gpu_time.failed || !gpu_time.write) return;
+    if (!gpu_time.stamped || gpu_time.failed || !gpu_time.write) return;
+    gpu_time.stamped = false;
     gpu_time.write(*cmdbuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, *gpu_time.pool, gpu_time.current * 2 + 1);
 }
 
 void GpuTimeCollect(const Device& device) {
-    if (!::Eden::DevVulkan::gpu_time || gpu_time.failed || !gpu_time.write) return;
+    // Results still pending are taken even once nobody asks for more, so the ring drains.
+    if (gpu_time.failed || !gpu_time.write) return;
     while (gpu_time.first_pending + 1 < gpu_time.next) {
         const u32 slot = static_cast<u32>(gpu_time.first_pending % GpuTimeProbe::SLOTS);
         std::array<u64, 2> stamps{};
@@ -91,10 +108,16 @@ void GpuTimeCollect(const Device& device) {
         gpu_time.max_ns = (std::max)(gpu_time.max_ns, ns);
         ++gpu_time.submissions;
         ++gpu_time.first_pending;
+        ::Eden::Hud::gpu_busy_ns.fetch_add(ns, std::memory_order_relaxed);
+        ::Eden::Hud::gpu_results.fetch_add(1, std::memory_order_relaxed);
     }
     const auto now = std::chrono::steady_clock::now();
     const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(now - gpu_time.report).count();
-    if (wall >= 5'000'000'000) {
+    if (wall >= 5'000'000'000 && !::Eden::DevVulkan::gpu_time) {
+        // The overlay alone: nothing is printed, and the window starts again.
+        gpu_time.busy_ns = gpu_time.max_ns = gpu_time.submissions = 0;
+        gpu_time.report = now;
+    } else if (wall >= 5'000'000'000) {
         std::printf("EDEN_GPU_TIME wall_ms=%.1f busy_ms=%.1f submissions=%llu max_ms=%.2f cumulative_ns=%llu cumulative_submissions=%llu pending=%llu\n", wall / 1e6,
                     gpu_time.busy_ns / 1e6, static_cast<unsigned long long>(gpu_time.submissions),
                     gpu_time.max_ns / 1e6, static_cast<unsigned long long>(gpu_time.total_ns),
