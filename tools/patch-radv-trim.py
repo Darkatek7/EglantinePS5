@@ -361,6 +361,8 @@ for relative, replacements in edits.items():
     if MARK in text:
         continue
     for old, new in replacements:
+        if old not in text and new in text:
+            continue  # already applied (a file patched before this script marked it)
         if text.count(old) != 1:
             raise SystemExit(f'{relative}: pinned anchor changed ({text.count(old)}x): {old.strip().splitlines()[0]!r}')
         text = text.replace(old, new)
