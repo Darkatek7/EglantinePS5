@@ -1117,6 +1117,9 @@ int main(int argc, char** argv) {
             static_assert(std::size(filters) == std::size(Eden::kUpscalingFilterKeys));
             // Settings > Video, with what the game does differently (Library > Game settings > Video).
             const auto video = Eden::PreferencesFor(eden_game_title_id(guest));
+            // Settings > Video > Skip game anti-aliasing (video_core/oot_network.h): read by the core
+            // at each dispatch of a game's network.
+            setenv("EDEN_OOT_ANTI_ALIASING", video.skip_game_aa ? "skip" : "game", 1);
             const int resolution = video.resolution;
             const int filter = video.upscaling_filter;
             Settings::values.resolution_setup.SetValue(resolutions[resolution]);
