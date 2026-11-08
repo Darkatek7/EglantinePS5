@@ -19,8 +19,10 @@ builds on the following projects, each under its own license.
   upstream source retains its GPL-3.0-or-later notices.
 - **[Catch2](https://github.com/catchorg/Catch2)**, BSL-1.0. Used by the focused
   host regression check at the version and source hash pinned by the core.
+- **[dav1d](https://code.videolan.org/videolan/dav1d)** by VideoLAN, BSD-2-Clause.
+  Built for the PS5 and linked into FFmpeg's libavcodec as its AV1 decoder.
 - **[FFmpeg](https://ffmpeg.org)**, LGPL-2.1-or-later. Built from Eden's pinned
-  source with only the H.264, VP8 and VP9 decoders.
+  source with only the H.264, VP8 and VP9 decoders, plus AV1 through dav1d.
 - **[OpenSSL](https://www.openssl.org)**, Apache-2.0, and
   **[zlib](https://zlib.net)**, zlib license. Taken from the
   [pacbrew](https://github.com/ps5-payload-dev/pacbrew-repo) PS5 packages.

@@ -45,7 +45,8 @@ if [[ ! -f $scratch/sdk/.complete ]]; then
     cp -a ../ps5-native-app-boilerplate/.deps/native/ps5-payload-sdk/target "$scratch/sdk/"
     touch "$scratch/sdk/.complete"
 fi
-if [[ ! -f $scratch/ffmpeg-native/install/lib/libavcodec.a ]]; then
+# .with-dav1d: built with the AV1 decoder (an older cache rebuilds once).
+if [[ ! -f $scratch/ffmpeg-native/install/lib/libavcodec.a || ! -f $scratch/ffmpeg-native/install/.with-dav1d ]]; then
     step "FFmpeg for the PS5"
     bash tools/build-headless-ffmpeg.sh
 fi
