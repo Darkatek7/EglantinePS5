@@ -314,6 +314,9 @@ struct Preferences
     bool large_text = false;
     bool high_contrast = false;
     bool reduce_motion = false;
+    // The launcher's theme and accent preset, by id (theme.hpp); "" is the theme's own accent.
+    std::string theme = "eglantine";
+    std::string accent;
     // Performance: speed against accuracy, for every game.
     bool block_list = false;    // compile the code of earlier sessions ahead
     bool async_shaders = false; // draw before a new shader is ready

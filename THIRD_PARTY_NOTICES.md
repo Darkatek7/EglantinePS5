@@ -104,6 +104,11 @@ builds on the following projects, each under its own license.
 - **[ProsperoPuzzles](https://github.com/blackbearreloaded/ProsperoPuzzles)**,
   GPL-3.0-or-later. The launcher's drawing, text, animation and sound code
   (`headless/eglantineps5/pe`) started there.
+- **[ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden)**,
+  GPL-3.0-or-later. The launcher's themes as data, their built-in Canopy and
+  Slate palettes and accent presets (`headless/eglantineps5/pe/ui/theme.*`), and
+  the check that the screens name colour roles (`tools/check-launcher-theme.py`)
+  are adapted from ProsperoEden's launcher.
 - **Montserrat** by Julieta Ulanovsky and contributors, SIL Open Font License
   1.1 (`third_party/fonts`). The launcher's font is baked from Montserrat Medium.
 - **[HarfBuzz](https://github.com/harfbuzz/harfbuzz)**, "Old MIT" license (its
