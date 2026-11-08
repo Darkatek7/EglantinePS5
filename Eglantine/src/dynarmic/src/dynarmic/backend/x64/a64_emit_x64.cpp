@@ -103,7 +103,8 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block, bool publish) noe
         if (conf.page_table)
             gprs.reset(size_t(HostLoc::R14));
         return gprs;
-    }(), any_xmm, conf.spill_to_free_gpr, conf.scratch_copy_to_free_reg);
+    }(), any_xmm, conf.spill_to_free_gpr, conf.scratch_copy_to_free_reg,
+       HostCallReturn(conf) ? std::optional<s32>{s32(offsetof(A64JitState, spill))} : std::nullopt);
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
 
@@ -154,6 +155,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block, bool publish) noe
     code.nzcv_flags_pos = nullptr;
     code.nzcv_live_pos = nullptr;
     check_bit_in_zf = false;
+    call_return_target.reset();
     emitting_block = true;
     pending_exit_stubs.clear();
     // EglantinePS5's frame_once sets %rbp once in the dispatcher prologue (block_of_code.cpp);
@@ -227,6 +229,10 @@ finish_this_inst:
         if (flags_live)
             code.nzcv_live_pos = code.getCurr();
     }
+    if (call_return_target && !ctx.IsSingleStep()) {
+        EmitHostCall(*call_return_target);
+    }
+    call_return_target.reset();
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.folded_address_adds.clear();
     code.nzcv_flags_pos = nullptr;
@@ -359,6 +365,11 @@ void A64EmitX64::GenTerminalHandlers() {
             code.mov(qword[r12 + to + offsetof(FastDispatchEntry, code_ptr)], rcx);
         }
         code.mov(qword[r12 + offsetof(FastDispatchEntry, location_descriptor)], rbx);
+        if (HostCallReturn(conf)) {
+            // Compiling can clear the whole code cache, and the guest call frames hold return
+            // addresses into it: drop them first (as the dispatcher does).
+            code.mov(rsp, qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_base)]);
+        }
         code.LookupBlock();
         code.mov(ptr[r12 + offsetof(FastDispatchEntry, code_ptr)], rax);
         code.jmp(rax);
@@ -379,6 +390,10 @@ void A64EmitX64::GenTerminalHandlers() {
 
 void A64EmitX64::EmitPushRSB(EmitContext& ctx, IR::Inst* inst) {
     if (!conf.HasOptimization(OptimizationFlag::ReturnStackBuffer)) {
+        return;
+    }
+    if (HostCallReturn(conf)) {
+        call_return_target = IR::LocationDescriptor{inst->GetArg(0).GetU64()};
         return;
     }
 
@@ -428,13 +443,48 @@ void A64EmitX64::EmitA64SetCheckBit(A64EmitContext& ctx, IR::Inst* inst) {
         check_bit_in_zf = true;
         return;
     }
-    code.mov(code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], to_store);
+    code.mov(CheckBitAddress(), to_store);
     eden_checkbit_mark = nullptr;
     if (__atomic_load_n(&eden_checkbit_flags, __ATOMIC_RELAXED)) {
         // fast_paths.cmake: ZF for the CheckBit terminal, if nothing else follows.
         code.test(to_store, to_store);
         eden_checkbit_mark = code.getCurr();
     }
+}
+
+// EglantinePS5 block links (defined with the terminals below, in the same unnamed namespace).
+enum class EdenLinkCheck { None, Halt, Cycles };
+namespace {
+void EdenEmitLink(A64EmitX64& e, IR::LocationDescriptor next, EdenLinkCheck check);
+}  // namespace
+
+Xbyak::Address A64EmitX64::CheckBitAddress() const {
+    if (HostCallReturn(conf)) {
+        return code.byte[code.ABI_JIT_PTR + offsetof(A64JitState, check_bit)];
+    }
+    return code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)];
+}
+
+// Guest call frame (host_call_return), from the caller's rsp R down:
+//   [R - 8]                   host return address: the landing code after the `call`
+//   [R - 16]                  location descriptor of the guest return address
+//   [R - 16 - shadow, R - 16) shadow space for the host calls the callee makes
+// so the callee runs with rsp = R - HostCallFrameSize, 16-byte aligned like R.
+void A64EmitX64::EmitHostCall(const IR::LocationDescriptor& return_target) {
+    static_assert(HostCallFrameSize == 16 + ABI_SHADOW_SPACE);
+    // Too deep (or frames left by returns that did not match): start again from no frames.
+    code.cmp(rsp, qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_limit)]);
+    code.cmovb(rsp, qword[code.ABI_JIT_PTR + offsetof(A64JitState, host_stack_base)]);
+    Xbyak::Label frame;
+    code.mov(rax, return_target.Value());
+    code.call(frame);
+    // Landing: a RET to the return address popped the frame, rsp is R again. EglantinePS5 links
+    // it through the JitGroup like every other link (EdenEmitLink).
+    EdenEmitLink(*this, return_target, EdenLinkCheck::None);
+    code.L(frame);
+    code.lea(rsp, ptr[rsp - (HostCallFrameSize - 8)]);
+    code.mov(qword[rsp + ABI_SHADOW_SPACE], rax);
+    // The terminal (the link to the callee) follows.
 }
 
 void A64EmitX64::EmitA64GetCFlag(A64EmitContext& ctx, IR::Inst* inst) {
@@ -816,8 +866,6 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::ReturnToDispatch, IR::LocationDes
 // (by any core) and unlinking it when `next` is invalidated are single atomic stores; while
 // unlinked it jumps to a stub that stores next's PC and returns to the dispatcher. Sites are
 // emitted unlinked and resolved when the block is registered.
-enum class EdenLinkCheck { None, Halt, Cycles };
-
 void EdenEmitLink(A64EmitX64& e, IR::LocationDescriptor next, EdenLinkCheck check) {
     BlockOfCode& code = e.code;
     const u64 next_pc = A64::LocationDescriptor{next}.PC();
@@ -890,8 +938,32 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::Locat
     return true;
 }
 
-
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor, bool is_single_step) {
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor initial_location, bool is_single_step) {
+    if (HostCallReturn(e.conf) && e.conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) && !is_single_step) {
+        // Host `ret` when the guest returns to the address the innermost frame's call pushed:
+        // its location descriptor is the PC masked to pc_mask plus this block's FPCR bits (an
+        // RET does not change the FPCR). Else the frame stays and the fast dispatcher runs.
+        e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+        e.code.jne(e.code.GetForceReturnFromRunCodeAddress());
+        e.code.mov(rax, qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)]);
+        static_assert(A64::LocationDescriptor::pc_mask == (u64(1) << 56) - 1);
+        e.code.shl(rax, 8);
+        e.code.shr(rax, 8);
+        const u64 fpcr_bits = A64::LocationDescriptor{initial_location}.SetPC(0).UniqueHash();
+        if (fpcr_bits != 0) {
+            e.code.mov(rcx, fpcr_bits);
+            e.code.or_(rax, rcx);
+        }
+        e.code.cmp(rax, qword[rsp + ABI_SHADOW_SPACE]);
+        if (e.conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+            e.code.jne(e.terminal_handler_fast_dispatch_hint);
+        } else {
+            e.code.jne(e.code.GetReturnFromRunCodeAddress());
+        }
+        e.code.lea(rsp, ptr[rsp + (HostCallFrameSize - 8)]);
+        e.code.ret();
+        return true;
+    }
     if (e.conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) && !is_single_step) {
         e.code.jmp(e.terminal_handler_pop_rsb_hint);
     } else {
@@ -942,7 +1014,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::CheckBit terminal, IR::LocationDe
          std::memcmp(mark, restore_rbp, sizeof(restore_rbp)) == 0)) {
         __atomic_fetch_add(&eden_checkbit_fused, 1, __ATOMIC_RELAXED);
     } else {
-        e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
+        e.code.cmp(e.CheckBitAddress(), u8(0));
     }
     e.code.jz(fail);
     e.EmitLeafTerminal(terminal.then_, initial_location, is_single_step);
