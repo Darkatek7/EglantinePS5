@@ -53,7 +53,7 @@ Local-wireless multiplayer through Eden rooms is new in v1.000.000 and experimen
 - **Settings per game** - a game can differ from Settings in its video, performance, audio, controls and language, and has its own Handheld / Docked mode (Triangle in the Library); see [Settings per game](#settings-per-game).
 - **Button mapping** - choose which DualSense button presses each of the game's buttons, for every controller, in **Settings > Controls**, or for one game in its settings; see [Button mapping](#button-mapping).
 - **Your language** - the launcher follows the language the PS5 is set to (29 languages; English otherwise).
-- **Accessibility** - larger text, high contrast and reduced motion, in **Settings > Accessibility**.
+- **Accessibility and themes** - larger text, high contrast, reduced motion, and a choice of launcher themes and accent colors, in **Settings > Accessibility**.
 - **Save data in and out** - import a game's save from a folder or from a Ryujinx data folder, and export a copy (Triangle in the Library, then **Save data**).
 - **Game updates and DLC** - put update and DLC files (NSP or XCI) in the `updates` folder next to `roms`. They apply when the game starts, and each game's details show the update version and DLC count.
 - **Download sources** - the games on servers in your network, such as a [RomM](https://github.com/rommapp/romm) server, appear in the Library next to the ones on the console. A game is downloaded when you play it, or ahead of time through a download queue, and then runs from the console like any other: nothing is streamed. Downloads need an FTP server running on the console; see [Download sources](#download-sources).
@@ -333,7 +333,7 @@ The menu opens with the profile that the PS5 user in front chose last. If you us
 
 | Kind | What a game can have of its own |
 |---|---|
-| Video | Renderer, resolution, upscaling filter, refresh rate, FPS overlay, frame generation with its target and multiplier |
+| Video | Renderer, resolution, upscaling filter, refresh rate, FPS overlay (its size, corner and fields: renderer, FPS, worst frame, speed, busiest CPU core, GPU load, free memory, ping), frame generation with its target and multiplier |
 | Performance | Each of the seven switches |
 | Audio | Game volume, mute |
 | Controls | Vibration, and a button mapping of its own |
@@ -354,7 +354,7 @@ The D-pad, the sticks and the [in-game shortcuts](#in-game-shortcuts) do not cha
 
 The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified and traditional), Czech, Danish, Dutch, Finnish, French, German, Greek, Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish, Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian and Vietnamese (with the regional variants the PS5 has for French, Portuguese and Spanish), and English otherwise. Arabic, Chinese, Greek, Japanese, Korean and Thai are drawn with the PS5's own system fonts. Arabic text runs right to left; the screens themselves are not mirrored. To use another one, put a file named `language.txt` holding its tag (for example `en-US` or `pt-BR`) in `/data/homebrew/PPSA98515`. The language *games* use is a separate setting, **Settings > Language**.
 
-**Settings > Accessibility** has three switches. **Larger text** draws the menu's small text about a third larger. **High contrast** uses solid panels, brighter text and an outlined highlight. **Reduce motion** stops the background drifting and the screens sliding, in the menu and on the loading screen. There is no screen reader.
+**Settings > Accessibility** starts with the launcher's **Theme** (Eglantine, the rose look, is the default; Canopy and Slate are the others) and its **Accent color**, a set of highlight colors for that theme; see [docs/THEMES.md](docs/THEMES.md). Under them are three switches. **Larger text** draws the menu's small text about a third larger. **High contrast** uses solid panels, brighter text and an outlined highlight. **Reduce motion** stops the background drifting and the screens sliding, in the menu and on the loading screen. There is no screen reader.
 
 ### Upgrading from an earlier alpha
 
@@ -478,7 +478,7 @@ A bug fix for v1.000.090. If you are on v1.000.090, update.
 - **Games close in about a second.** Touchpad + L1 used to take 10-25 seconds to return to the library; logging no longer waits on the console's storage, and the emulator skips needless teardown work.
 - **Up to four controllers.** Each signed-in PS5 user's controller becomes the next player (player 1 is whoever launched the game); controllers can join or leave during a game, and games that ask for controllers connect every one in use.
 - The Touchpad + L1 and Touchpad + R1 shortcuts work from any controller.
-- **Vibration and motion.** DualSense rumble for games that use it (turn it off in **Settings > Controls**), and the controller's gyro and accelerometer for motion controls.
+- **Vibration and motion.** DualSense rumble for games that use it, played as HD rumble through the controller's haptic actuators (the classic rumble motors when those are not available), including Switch 2 games; turn it off or lower its strength (25-100%) in **Settings > Controls**. The controller's gyro and accelerometer drive motion controls.
 - **Resolution and upscaling.** **Settings > Video** now sets the internal rendering resolution (0.5x to 2x) and the filter that scales it to the TV: Bilinear, AMD FSR, Bicubic or Nearest.
 - **Per-game settings.** Press Triangle on a game in the Library to give it its own renderer, resolution and upscaling filter.
 - **Language setting.** **Settings > Language** picks the language games use (18 languages), with the console region that goes with it. It applies when a game starts.

@@ -503,6 +503,17 @@ void pictures(Stage &s)
     s.press({Key::circle, Key::down, Key::cross});
     s.wait(0.8f);
     s.shoot("17-controls");
+    // Vibration strength, the second row: Left takes it a step (25%) down, Right back up.
+    s.press({Key::down, Key::left});
+    s.wait(0.4f);
+    s.shoot("56-controls-strength");
+    const int weaker = s.services.preferences().vibration_strength;
+    s.press({Key::right});
+    if (weaker != 75 || s.services.preferences().vibration_strength != 100)
+    {
+        std::fprintf(stderr, "error: the vibration strength did not reach the settings\n");
+        s.ok = false;
+    }
     // The button mapping: B moved to Circle takes A's place (A gets Cross), then all back.
     s.press({Key::down});
     s.wait(0.4f);
@@ -523,7 +534,21 @@ void pictures(Stage &s)
     s.press({Key::circle, Key::down, Key::cross});
     s.wait(0.8f);
     s.shoot("30-accessibility");
-    s.press({Key::down, Key::down});
+    // The next theme, then its second accent colour; then Eglantine again, with its own colours.
+    s.press({Key::right});
+    s.wait(0.6f);
+    s.shoot("32-theme-canopy");
+    s.press({Key::down, Key::right});
+    s.wait(0.6f);
+    s.shoot("33-theme-accent");
+    s.press({Key::up, Key::left});
+    s.wait(0.4f);
+    if (s.services.preferences().theme != "eglantine" || !s.services.preferences().accent.empty())
+    {
+        std::fprintf(stderr, "error: the theme did not return to Eglantine\n");
+        s.ok = false;
+    }
+    s.press({Key::down, Key::down, Key::down, Key::down});
     s.wait(0.6f);
     s.shoot("31-accessibility-motion");
     s.press({Key::circle, Key::down, Key::cross});
@@ -1124,7 +1149,7 @@ int main(int argc, char **argv)
         }
         const std::uint32_t texture = batch.create_font_texture(font);
         pe::gfx::DrawList list;
-        list.rounded_rect({0.0f, 0.0f, 1920.0f, 1080.0f}, 0.0f, pe::ui::theme::kPanel);
+        list.rounded_rect({0.0f, 0.0f, 1920.0f, 1080.0f}, 0.0f, pe::ui::th().panel);
         float x = 40.0f;
         float y = 60.0f;
         const float size = 30.0f;
@@ -1152,8 +1177,8 @@ int main(int argc, char **argv)
             {
                 for (const std::string &part : font.wrap(line.substr(2), size, column))
                 {
-                    list.rounded_rect({x, y - size, column, pitch - 6.0f}, 4.0f, pe::ui::theme::kRow);
-                    list.text(font, texture, part, x, y, size, pe::ui::theme::kText);
+                    list.rounded_rect({x, y - size, column, pitch - 6.0f}, 4.0f, pe::ui::th().row);
+                    list.text(font, texture, part, x, y, size, pe::ui::th().text);
                     advance();
                 }
                 continue;
@@ -1161,13 +1186,13 @@ int main(int argc, char **argv)
             if (line.substr(0, 2) == "F ")
             {
                 // Cut to a narrow place, as a long title is.
-                list.rounded_rect({x, y - size, 420.0f, pitch - 6.0f}, 4.0f, pe::ui::theme::kRow);
-                list.text(font, texture, font.fit(line.substr(2), size, 420.0f), x, y, size, pe::ui::theme::kText);
+                list.rounded_rect({x, y - size, 420.0f, pitch - 6.0f}, 4.0f, pe::ui::th().row);
+                list.text(font, texture, font.fit(line.substr(2), size, 420.0f), x, y, size, pe::ui::th().text);
                 advance();
                 continue;
             }
-            list.text(font, texture, line, x, y, size, pe::ui::theme::kText);
-            list.text(font, texture, line, x + column, y, 20.0f, pe::ui::theme::kLime, pe::gfx::Align::right);
+            list.text(font, texture, line, x, y, size, pe::ui::th().text);
+            list.text(font, texture, line, x + column, y, 20.0f, pe::ui::th().accent, pe::gfx::Align::right);
             advance();
         }
         batch.sync_font_texture(texture, font);

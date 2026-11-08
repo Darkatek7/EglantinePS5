@@ -27,8 +27,9 @@ void main() {
                                    float(text.loading - 1u) * 0.001, state), 1.0);
         return;
     }
-    // The overlay: x and y are where its text starts, width the picture's height. The text is
-    // laid out for a picture 1080 rows high (a glyph's cell is 4 pixels there).
+    // The overlay: x and y are where its text starts, width the rows its cells are laid out
+    // for (a glyph's cell is 4 pixels in a picture 1080 rows high at 1x; hud.h, PlaceHud). Two
+    // glyphs to a word, the even one in the low half (hud.h, HudText).
     ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(text.x, text.y);
     float cell_size = 4.0 * float(text.width) / 1080.0;
     bool ink = false;
@@ -36,8 +37,10 @@ void main() {
         ivec2 cell = ivec2(vec2(p) / cell_size);
         int i = cell.x / 4;
         int x = cell.x % 4;
-        if (i < 28 && x < 3 && cell.y < 5)
-            ink = ((glyphs[i] >> uint((4 - cell.y) * 3 + 2 - x)) & 1u) != 0u;
+        if (i < 56 && x < 3 && cell.y < 5) {
+            uint glyph = (glyphs[i >> 1] >> uint((i & 1) * 16)) & 0x7fffu;
+            ink = ((glyph >> uint((4 - cell.y) * 3 + 2 - x)) & 1u) != 0u;
+        }
     }
     color = ink ? vec4(0.9, 0.95, 1.0, 1.0) : vec4(0.025, 0.04, 0.075, 0.5);
 }
