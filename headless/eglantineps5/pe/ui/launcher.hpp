@@ -408,6 +408,7 @@ class Launcher
     std::array<tween::Spring, 7> switches_{};
     ListView video_rows_; // the Video dialog's rows (more than it shows)
     ListView performance_rows_; // the Performance dialog's rows (more than it shows)
+    ListView accessibility_rows_; // the Accessibility dialog's rows: the theme, then the switches
     GameSettings game_settings_;
     bool game_docked_ = true;
     SaveSource import_source_ = SaveSource::none; // what Save data could import for the game

@@ -3203,6 +3203,7 @@ endif()
                 "${launcher_dir}/pe/ui/library.cpp"
                 "${launcher_dir}/pe/ui/settings.cpp"
                 "${launcher_dir}/pe/ui/textures.cpp"
+                "${launcher_dir}/pe/ui/theme.cpp"
                 "${launcher_dir}/pe/ui/widgets.cpp")
             target_sources(eden-headless PRIVATE ${launcher_sources})
             # Download sources and their queue (remote/remote.h), with their backends (remote/source.h,

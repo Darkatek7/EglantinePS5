@@ -207,6 +207,26 @@ int main() {
     assert(look.large_text && !look.high_contrast && look.reduce_motion && !look.vibration);
     assert(Read(file).find("\"reduce_motion\": true") != std::string::npos);
 
+    // The launcher's theme (Settings > Accessibility): Eglantine with its own accent unless
+    // another is chosen; an id that is not one is not written, and not read.
+    auto theme = Eden::LoadPreferences(file);
+    assert(theme.theme == "eglantine" && theme.accent.empty());
+    theme.theme = "slate";
+    theme.accent = "ice";
+    assert(Eden::SavePreferences(theme, file));
+    theme = Eden::LoadPreferences(file);
+    assert(theme.theme == "slate" && theme.accent == "ice" && theme.large_text);
+    assert(Read(file).find("\"theme\": \"slate\"") != std::string::npos);
+    auto odd_theme = theme;
+    odd_theme.theme = "../Slate";
+    assert(!Eden::SavePreferences(odd_theme, file));
+    odd_theme.theme.clear();
+    assert(!Eden::SavePreferences(odd_theme, file));
+    assert(Eden::LoadPreferences(file).theme == "slate");
+    theme.theme = Eden::kDefaultLauncherTheme;
+    theme.accent.clear();
+    assert(Eden::SavePreferences(theme, file));
+
     // Renderer, resolution and filter per title (Library > Game settings); -1 = Settings default.
     auto game = Eden::LoadGameSettings(racer, file);
     assert(game.renderer == -1 && game.resolution == -1 && game.upscaling_filter == -1);

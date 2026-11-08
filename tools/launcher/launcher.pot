@@ -61,6 +61,15 @@ msgstr ""
 msgid "About {0} s left"
 msgstr ""
 
+#: pe/ui/settings.cpp
+msgid "ACCENT COLOR"
+msgstr ""
+
+#. Settings > Accessibility row: the theme's highlight colour. The colours' names (Rose, Ocean...) stay as they are.
+#: pe/ui/settings.cpp
+msgid "Accent color"
+msgstr ""
+
 #. Label: which folders the app can read.
 #: pe/ui/browse.cpp
 msgid "ACCESS"
@@ -416,6 +425,10 @@ msgstr ""
 #. A DualSense button (the X-shaped one). Name the shape, not the letter.
 #: pe/ui/game_options.cpp
 msgid "Cross"
+msgstr ""
+
+#: pe/ui/theme.cpp
+msgid "Dark rose glass and petal pink."
 msgstr ""
 
 #. A per-game setting that follows the general setting; {0} is its value.
@@ -1136,6 +1149,10 @@ msgstr ""
 
 #: pe/ui/pairing.cpp, pe/ui/settings.cpp
 msgid "Needs attention"
+msgstr ""
+
+#: pe/ui/theme.cpp
+msgid "Neutral glass, clean and still."
 msgstr ""
 
 #: pe/ui/profiles.cpp
@@ -2025,6 +2042,10 @@ msgstr ""
 msgid "The game starts when the download is done."
 msgstr ""
 
+#: pe/ui/settings.cpp
+msgid "The highlight and accent color of the theme in use."
+msgstr ""
+
 #: pe/ui/game_options.cpp, pe/ui/multiplayer.cpp, pe/ui/settings.cpp
 msgid "The keyboard could not be opened."
 msgstr ""
@@ -2074,6 +2095,15 @@ msgstr ""
 msgid "The update could not finish"
 msgstr ""
 
+#: pe/ui/settings.cpp
+msgid "THEME"
+msgstr ""
+
+#. Settings > Accessibility row: the launcher's look (its colours). The themes' names (Eglantine, Canopy, Slate) stay as they are.
+#: pe/ui/settings.cpp
+msgid "Theme"
+msgstr ""
+
 #: pe/ui/save_sync.cpp
 msgid "This console and the server both have save data the other does not know. Which one should stay? The other is kept as a backup."
 msgstr ""
@@ -2116,6 +2146,10 @@ msgstr ""
 #. A DualSense button.
 #: pe/ui/game_options.cpp
 msgid "Triangle"
+msgstr ""
+
+#: pe/ui/theme.cpp
+msgid "Tropical dusk, dark green glass and lime."
 msgstr ""
 
 #: pe/ui/pairing.cpp, pe/ui/remote.cpp, pe/ui/save_sync.cpp, pe/ui/update.cpp

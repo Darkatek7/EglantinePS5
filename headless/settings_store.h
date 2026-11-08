@@ -11,6 +11,7 @@
 //     "controls": { "vibration": true, "mapping": { "a": "cross", "b": "circle" } },
 //     "system": { "language": "en-US" },
 //     "accessibility": { "large_text": false, "high_contrast": false, "reduce_motion": false },
+//     "launcher": { "theme": "eglantine", "accent": "" },
 //     "diagnostics": { "detailed_logging": false, "immediate_logs": false },
 //     "performance": { "block_list": false, "async_shaders": false, "fast_gpu": false,
 //                      "unsafe_cpu": false, "unsafe_dma": false, "reactive_flushing": true,
@@ -110,6 +111,17 @@ inline constexpr int kLanguageRegions[] = {1, 2, 2, 1, 2, 2, 2, 1, 2, 1, 2, 2, 2
 static_assert(std::size(kLanguageLabels) == std::size(kLanguageKeys) &&
               std::size(kLanguageSettings) == std::size(kLanguageKeys) &&
               std::size(kLanguageRegions) == std::size(kLanguageKeys));
+// The launcher theme a new install uses: the rose look the launcher always had.
+inline constexpr const char* kDefaultLauncherTheme = "eglantine";
+
+// A theme or accent id as the settings file keeps it: short, lowercase letters, digits and '-'.
+inline bool ValidLauncherId(std::string_view id) {
+    if (id.size() > 32) return false;
+    for (const char c : id)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    return true;
+}
+
 struct Preferences {
     bool hud = true;
     int volume = 100;
@@ -130,6 +142,10 @@ struct Preferences {
     bool large_text = false;             // Settings > Accessibility: the launcher's look
     bool high_contrast = false;
     bool reduce_motion = false;
+    // Settings > Accessibility: the launcher's theme and its accent preset, by id
+    // (pe/ui/theme.cpp). "" is the theme's own accent; an id this build has not shows the default.
+    std::string theme = kDefaultLauncherTheme;
+    std::string accent;
     ButtonMapping mapping = kDefaultMapping;  // Settings > Controls > Button mapping
     int controller = -1;                 // a game's own Controller type (kControllerKeys); -1: automatic
     bool immediate_logs = false;         // Settings > Diagnostics: log lines written as they come
@@ -368,6 +384,10 @@ inline Preferences LoadPreferences(const std::string& file = SettingsFile()) {
     result.high_contrast = Settings::Bool(document, Json::json_pointer("/accessibility/high_contrast"), false);
     result.reduce_motion = Settings::Bool(document, Json::json_pointer("/accessibility/reduce_motion"), false);
     result.mapping = Settings::Mapping(document, Json::json_pointer("/controls/mapping"), kDefaultMapping);
+    const std::string theme = Settings::String(document, Json::json_pointer("/launcher/theme"));
+    if (!theme.empty() && ValidLauncherId(theme)) result.theme = theme;
+    const std::string accent = Settings::String(document, Json::json_pointer("/launcher/accent"));
+    if (ValidLauncherId(accent)) result.accent = accent;
     return result;
 }
 
@@ -380,7 +400,8 @@ inline bool SavePreferences(const Preferences& value, const std::string& file = 
         value.output < 0 || value.output >= int(std::size(kOutputKeys)) ||
         value.frame_gen_type < 0 || value.frame_gen_type >= int(std::size(kFrameGenTypeKeys)) ||
         value.language < 0 || value.language >= int(std::size(kLanguageKeys)) ||
-        !ValidMapping(value.mapping)) return false;
+        !ValidMapping(value.mapping) || value.theme.empty() || !ValidLauncherId(value.theme) ||
+        !ValidLauncherId(value.accent)) return false;
     Settings::Json document = Settings::Load(file);
     document["version"] = 1;
     document["video"]["renderer"] = value.backend == GraphicsBackend::Vulkan ? "vulkan" : "opengl";
@@ -405,6 +426,8 @@ inline bool SavePreferences(const Preferences& value, const std::string& file = 
     document["accessibility"]["large_text"] = value.large_text;
     document["accessibility"]["high_contrast"] = value.high_contrast;
     document["accessibility"]["reduce_motion"] = value.reduce_motion;
+    document["launcher"]["theme"] = value.theme;
+    document["launcher"]["accent"] = value.accent;
     return Settings::Write(document, file);
 }
 
