@@ -538,6 +538,16 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     std::printf("EDEN_DEV_JIT bits=64 core=%zu cache=%u\n", m_core_index, config.code_cache_size);
 #else // PS5
 #endif // PS5
+#if defined(ARCHITECTURE_x86_64)
+    // x86-64 host code generation options; Paranoid keeps dynarmic's defaults.
+    if (Settings::values.cpu_accuracy.GetValue() != Settings::CpuAccuracy::Paranoid) {
+        // The JIT spilled ~9% of its instructions to stack slots in Ocarina of Time's hot code
+        // while callee-saved GPRs sat empty: evictions go to a free callee-saved GPR first, and an
+        // operand that is overwritten but still needed is copied to a free register instead.
+        config.spill_to_free_gpr = true;
+        config.scratch_copy_to_free_reg = true;
+    }
+#endif
     m_jit.emplace(config);
 }
 
