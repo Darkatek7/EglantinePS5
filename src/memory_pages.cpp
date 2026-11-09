@@ -1120,7 +1120,15 @@ bool CommitCodeRange(const void* executable, std::size_t bytes) noexcept {
         const std::lock_guard lock{code_mutex};
         std::size_t committed = range.committed.load(std::memory_order_relaxed);
         while (committed < bytes) {
-            if (!CommitCodeStep(range, committed)) return false;
+            // Out of memory for the JIT's next 16 MiB: the guest memory service packs cold guest
+            // memory to give some back, and the step is asked for again (up to 3 times). Before, a
+            // refused step aborted the app (MKW without Pro memory, deep in a race).
+            bool stepped = CommitCodeStep(range, committed);
+            for (int attempt = 0; !stepped && attempt < 3; ++attempt) {
+                if (eden_memory_recover(CodeStep + (std::size_t{16} << 20)) == 0) break;
+                stepped = CommitCodeStep(range, committed);
+            }
+            if (!stepped) return false;
             committed += CodeStep;
             range.committed.store(committed, std::memory_order_release);
         }
