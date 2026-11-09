@@ -90,6 +90,9 @@ void ResetCounters() noexcept {
         counter->store(0, std::memory_order_relaxed);
 }
 
+// Freed pages cleared (GuestMemoryFreedPart, below).
+std::atomic<std::uint64_t> freed_part_calls{0}, freed_part_bytes{0};
+
 bool LockSlot(SparseRange& range, std::size_t slot, bool count_wait = false) noexcept {
     auto& state = range.state[slot];
     bool waited = false;
@@ -1402,7 +1405,7 @@ void ServiceReport(SparseRange& range, const char* when) noexcept {
         "EDEN_CRAM %s held=%zuMiB own=%zu shared=%zu zero=%zu faults=%llu promotions=%llu copies=%llu waits=%llu "
         "returns_clear=%llu returns_free=%llu returns_scan=%llu dedup=%llu reserve_used=%llu failures=%llu "
         "passes=%llu scan_ms=%llu fine=%zu fine_held=%zuMiB fined=%llu unfined=%llu fine_failures=%llu "
-        "reserve=%zuMiB host_transferred=%lluMiB\n",
+        "reserve=%zuMiB host_transferred=%lluMiB freed_parts=%llu freed_parts_cleared=%lluMiB\n",
         when, guest_committed.load(std::memory_order_relaxed) >> 20, own, shared, slots - own - shared - fine,
         (unsigned long long)counters.faults.load(), (unsigned long long)counters.promotions.load(),
         (unsigned long long)counters.copies.load(), (unsigned long long)counters.waits.load(),
@@ -1413,7 +1416,8 @@ void ServiceReport(SparseRange& range, const char* when) noexcept {
         fine, fine_kept * FinePage >> 20, (unsigned long long)counters.fined.load(),
         (unsigned long long)counters.unfined.load(), (unsigned long long)counters.fine_failures.load(),
         reserve_count.load(std::memory_order_relaxed) * (SparseSlot >> 20),
-        (unsigned long long)counters.host_reserve_used.load() * (SparseSlot >> 20));
+        (unsigned long long)counters.host_reserve_used.load() * (SparseSlot >> 20),
+        (unsigned long long)freed_part_calls.load(), (unsigned long long)(freed_part_bytes.load() >> 20));
     if (length > 0) Report(line);
     // Who wrote the slots that were promoted: the largest places (offsets in the app's image).
     struct Top { const WriterSite* site; std::uint64_t count; } top[10]{};
@@ -1862,6 +1866,41 @@ void GuestMemoryFreed(std::uint64_t offset, std::size_t bytes) noexcept {
             counters.returns_free.fetch_add(1, std::memory_order_relaxed);
         }
         UnlockSlot(*range, static_cast<std::size_t>(slot), SlotZero);
+    }
+}
+
+// The guest's kernel freed pages that do not make a free block of 2 MiB (a region's tail, a page
+// group's blocks): GuestMemoryFreed never sees them, and the slot they sit in stays held whole.
+// MKW unmaps ~1.7 GB in a 5-minute session in pieces of ~370 KiB, and ~640 MiB of it was never
+// given back. Nothing in the guest can read freed pages (the kernel fills or hands them out again
+// before use), so they are cleared where the slot has a block of its own; the scanner then gives
+// back the slot (all zero) or its pages of zeroes (Fine). EDEN_GUEST_FREE_ZERO=0 leaves them.
+bool ZeroFreedParts() noexcept {
+    static const bool on = [] {
+        const char* value = std::getenv("EDEN_GUEST_FREE_ZERO");
+        return value == nullptr || value[0] != '0';
+    }();
+    return on;
+}
+
+void GuestMemoryFreedPart(std::uint64_t offset, std::size_t bytes) noexcept {
+    SparseRange* const range = guest_range.load(std::memory_order_acquire);
+    if (range == nullptr || !range->promote || bytes == 0 || !ZeroFreedParts()) return;
+    const std::size_t slots = (range->end - range->begin.load(std::memory_order_relaxed)) / SparseSlot;
+    freed_part_calls.fetch_add(1, std::memory_order_relaxed);
+    for (std::uint64_t at = offset, end = offset + bytes; at < end;) {
+        const std::size_t slot = static_cast<std::size_t>(at / SparseSlot);
+        const std::uint64_t slot_end = std::min<std::uint64_t>(end, (at / SparseSlot + 1) * SparseSlot);
+        if (slot >= slots) break;
+        LockSlot(*range, slot);
+        const std::uint8_t state = SlotState(*range, slot);
+        if (state == SlotOwn) {
+            std::memset(reinterpret_cast<void*>(SlotAddress(*range, slot) + at % SparseSlot), 0,
+                        static_cast<std::size_t>(slot_end - at));
+            freed_part_bytes.fetch_add(slot_end - at, std::memory_order_relaxed);
+        }
+        UnlockSlot(*range, slot, state);
+        at = slot_end;
     }
 }
 
