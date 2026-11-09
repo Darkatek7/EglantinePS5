@@ -214,3 +214,54 @@ MKW 1x, early packing (`EDEN_CRAM_PACK=1 EDEN_CRAM_PACK_BELOW_MIB=4096 EDEN_CRAM
 - Find where the macro's parameters come from at that point: the command list words around the
   0x1e6 calls, compared between a good run and a bad one.
 - Packing is safe to turn back on only after that.
+
+## Without PS5 Pro memory (2026-11-09, branch fix/mkw-nonpro-memory)
+
+`param.json` attribute3 0x80040 instead of 0x8480040: the kernel gives the app `DMEM size: 0x2fc000000`
+(12,224 MiB) instead of 0x348000000 (13,440 MiB). MKW 1x, scripted input from the title into a race
+(`tools/mkw-leak-console.py`), build = main + #86 + #87 + #83 (core 0056) + SVC counters (core 0057).
+
+**Every run ends at race load, 161 s after launch (121 s after loading), out of memory.**
+Different allocations fail each time (a buffer, an image, `vkEndCommandBuffer`), with the pool's
+largest free block at 1 MiB. No impossible draws and no macro failures: it is plain exhaustion.
+
+| Run | Change | Largest free before the end | Game memory held | Driver | Eden heap | Result |
+|---|---|---|---|---|---|---|
+| run2 | baseline | 331 MiB | 5.9 GB | 2.5 GB | 1.6 GB | OOM at 161 s |
+| run3 | + clear freed pieces (below) | 20 MiB | 5.55 GB | 3.2 GB | – | OOM at 161 s |
+| run4 | + #84 heap release, #88 packing (GPU-reachable slots never packed) | 499 MiB | 5.45 GB | – | – | OOM at 161 s; 86 MiB packed |
+
+### Why game memory grows: the game writes fresh pages of its 8 GB heap
+
+- SVC counters (core 0057, `EDEN_SVC_MEMORY`): one `SetHeapSize` (8,162 MiB) at ~36 s, then
+  ~3.3k `MapPhysicalMemory` / ~4.7k `UnmapPhysicalMemory` calls (net ~1 GiB), mostly in the first
+  2.5 minutes. The game does **not** reserve everything at startup.
+- ps5debug-NG (`tools/ps5debug.py watch`) shows the same from the console's side. The 20 GiB guest
+  range at 0x8000000000 has `rw-` mappings exactly where Eden holds a slot: 12 MiB at 30 s, 5,140 MiB at
+  240 s, matching `EDEN_MEMORY` (5,157 MiB).
+- Diffing the samples by slot: after 100 s, 150–260 MiB of slots that had never been written appear
+  every 20 s. They come in a few regions that move upward (13.0→13.5 GiB, 15.x GiB, 18.0→18.5 GiB of
+  guest memory), and almost none are given back. The game's allocators keep moving into untouched
+  heap pages as it streams data (on the title loop alone). On a Switch 2 the whole heap is real
+  memory, so this costs nothing there; here every first write takes 2 MiB from the shared pool.
+
+### Freed pieces: tried, small effect
+
+The guest kernel's page heap reported only free blocks of 2 MiB or more. ~640 MiB of the 1.7 GB the
+game unmapped came back in smaller pieces and stayed held. `GuestMemoryFreedPart` now clears such
+pieces in held slots (`EDEN_GUEST_FREE_ZERO=0` turns it off), for the scanner to give back. run3
+cleared 992 MiB of freed pages, but the game maps those pages again within seconds. Whole slots
+returned stayed ~207, and game memory held at the end was ~300 MiB lower. It is kept (harmless), but
+it is not the fix.
+
+### Packing with GPU-reachable slots excluded packs almost nothing
+
+MKW maps nearly all of its memory for the GPU, so core 0059's rule left 86 MiB to pack (run4).
+Earlier runs without the rule packed 1.0–1.3 GB (into 0.2–0.3 GB), i.e. ~1 GB saved, the only lever
+of that size.
+
+### ps5debug-NG caution
+
+Twice the console went off the network (a reboot, ~20 min) when the runner closed MKW while
+`watch` was reading its map. The tool now checks the process is still listed, and the runs here
+sample only the measured run and stop 50 s before the runner closes the game.
