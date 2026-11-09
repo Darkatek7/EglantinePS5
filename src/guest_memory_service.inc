@@ -183,7 +183,9 @@ std::int64_t* pack_kept = nullptr; // per slot: the block a packed slot kept, -1
 // manager): such a slot is not packed. With packing, Mario Kart World's emulated GPU read impossible
 // draw arguments (1.8-2.9 billion indices) and the GPU hung, only in sessions where the GPU thread
 // itself touched packed slots; the slots' data came back intact, so what the GPU reads through its
-// caches and their ordering must not meet a packed slot. EDEN_CRAM_PACK_GPU=1 packs them anyway.
+// caches and their ordering must not meet a packed slot. That left MKW ~86 MiB to pack (it maps
+// nearly all its memory for the GPU), and it still ran out; the impossible draws come without
+// packing too. So such slots are packed by default; EDEN_CRAM_PACK_GPU=0 keeps them out.
 std::atomic<std::atomic<std::int32_t>*> gpu_cached_table{nullptr};
 std::size_t gpu_cached_slots = 0;
 std::atomic<std::uint64_t> pack_gpu_skips{0}, pack_gpu_marked{0};
@@ -1165,26 +1167,31 @@ bool ScanShare(SparseRange& range, std::size_t keep, std::size_t other) noexcept
 // each scan pass packs up to PackPerPass slots unwritten for ColdSeconds or more, the
 // coldest first. A slot packed before waits twice as many passes each time (it came back), and
 // one that does not compress to PackMaxRatio is left as it is.
-// Off unless EDEN_CRAM_PACK=1: with packing, Mario Kart World's emulated GPU read garbage (draws of
-// 1.8-2.9 billion indices) and the GPU hung in sessions that packed, which none did without it;
-// some path reads the game's memory without faulting on a packed slot (docs/MKW-MEMORY-LEAK.md).
+// On unless EDEN_CRAM_PACK=0 (2026-11-09). It only starts once the pool's largest free block is
+// below EDEN_CRAM_PACK_BELOW_MIB, so a game that fits never packs. Without PS5 Pro memory (12,224
+// MiB) Mario Kart World ran out at every race load without it; with it (GPU-reachable slots
+// included, below) it ran a whole race and into the next (docs/MKW-MEMORY-LEAK.md). It was off from
+// 2026-11-08: sessions that packed showed impossible draws and GPU hangs, but those draws turned out
+// to come without packing too (the race-load event), and the hangs with GPU threads waiting for
+// memory went with the unpack reserve (EDEN_CRAM_UNPACK_KEEP_MIB).
 bool PackEnabled() noexcept {
     static const bool on = [] {
         const char* value = std::getenv("EDEN_CRAM_PACK");
-        return value != nullptr && value[0] == '1' && &LZ4_compress_default != nullptr &&
+        return (value == nullptr || value[0] != '0') && &LZ4_compress_default != nullptr &&
                &LZ4_decompress_safe != nullptr && &LZ4_compressBound != nullptr;
     }();
     return on;
 }
 constexpr std::size_t PackPerPass = 256;                       // 512 MiB of slots
 // EDEN_CRAM_PACK_BELOW_MIB / EDEN_CRAM_PACK_COLD_S: when packing starts (largest free block) and how long
-// a slot must stay unwritten (tuning; defaults 1536 MiB and 60 s).
+// a slot must stay unwritten (tuning; defaults 3072 MiB and 30 s: MKW without Pro memory needs packing
+// to start well before the race load, which takes ~1.5 GB at once).
 std::size_t EnvOr(const char* name, std::size_t fallback) noexcept {
     const char* value = std::getenv(name);
     return value != nullptr && *value ? static_cast<std::size_t>(std::strtoull(value, nullptr, 10)) : fallback;
 }
 std::size_t PackBelowLargest() noexcept {
-    static const std::size_t bytes = EnvOr("EDEN_CRAM_PACK_BELOW_MIB", 1536) << 20;
+    static const std::size_t bytes = EnvOr("EDEN_CRAM_PACK_BELOW_MIB", 3072) << 20;
     return bytes;
 }
 constexpr double PackMaxRatio = 0.6;
@@ -1219,7 +1226,7 @@ bool PackSlot(SparseRange& range, std::size_t slot) noexcept {
     if (table == nullptr) return false;
     static const bool pack_gpu = [] {
         const char* value = std::getenv("EDEN_CRAM_PACK_GPU");
-        return value != nullptr && value[0] == '1';
+        return value == nullptr || value[0] != '0';
     }();
     if (auto* gpu_cached = gpu_cached_table.load(std::memory_order_acquire);
         !pack_gpu && gpu_cached != nullptr && slot < gpu_cached_slots &&
@@ -1304,7 +1311,7 @@ bool ColdReport() noexcept {
 }
 constexpr std::size_t ColdSamples = 24;
 std::size_t ColdSecondsNow() noexcept {
-    static const std::size_t seconds = EnvOr("EDEN_CRAM_PACK_COLD_S", 60);
+    static const std::size_t seconds = EnvOr("EDEN_CRAM_PACK_COLD_S", 30);
     return seconds;
 }
 #define ColdSeconds ColdSecondsNow()
