@@ -296,3 +296,22 @@ Earlier packing (`EDEN_CRAM_PACK_BELOW_MIB=5120 EDEN_CRAM_PACK_COLD_S=15`, run8,
 into 0.5 GB. Both reached the race; one was gone (home screen) between 241 and 441 s, the other ran
 out at 296 s (JIT code cache). Packing more of the game does not close the gap: what is left is the
 driver (~3.8 GB) and Eden's heap (~1.5–1.8 GB).
+
+### JIT code cache under pressure (run9, run10)
+
+The JIT aborted when its next 16 MiB step was refused ("JIT code cache: the console has no memory for its next part"),
+even after packing gave memory back (`recover asked=14MiB packed=14MiB`): the pool's free memory was
+scattered, with no 16 MiB run. Now a refused step asks the guest memory service for memory back
+(up to 3 times), and each step is taken as eight 2 MiB pieces. run10 (3 runs): no JIT abort. Two
+runs ended at 407 and 415 s (~250 s into the race), when a heap allocation was refused (SIGSEGV at
+0x199). The third, like run9's third and both "app gone" runs before it, ended after the race-load
+macro event (0x1e6 / 0x21a "instruction limit exceeded", at 243–291 s): frames stop and the app is
+gone.
+
+So without Pro memory two things are left:
+1. **The pool runs dry ~250 s into a race.** That is the game (~4.5 GB held plus ~0.4 GB packed),
+   the driver (~3.3–3.8 GB) and Eden's heap (~1.6 GB). Packing more does not help (run8). The
+   driver and the heap have to shrink.
+2. **The macro event.** It comes at race loads, more often with packing and a short pool. Every
+   "app gone" run ended with it. It is the open item from #88: find where 0x1e6's parameters come
+   from when it fails.
