@@ -131,7 +131,7 @@ buffer"; the buffer cache merged up to 101 buffers into it, RADV built it from u
 pieces, and a staging buffer of the same size was asked for at once ("recover asked=2768MiB"). The
 pool ran out on the spot, even with 2.4 GB free.
 
-Core patch 0051 works out the span in 64 bits, treats an index limit below the start as no
+Core patch 0056 works out the span in 64 bits, treats an index limit below the start as no
 bound, caps an index binding at 128 MiB, and drops an indexed draw whose indices reach past the
 cap. Capping alone was not enough: run on the GPU, a 559 million index draw kept the queue past
 the driver's 10 s limit and the device was lost.
@@ -157,7 +157,7 @@ another set); without it, 0 of 2.
 
 ## Result
 
-MKW 1x, title into a race, on the final build (packing off, patch 0051):
+MKW 1x, title into a race, on the final build (packing off, patch 0056):
 
 | Runs | Length | Result |
 |---|---|---|
