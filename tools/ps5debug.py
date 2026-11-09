@@ -15,7 +15,9 @@ the counters the app prints (EDEN_MEMORY, EDEN_GUEST_POOLS, EDEN_SVC_MEMORY).
 `app` is the foreground application (EglantinePS5 while a game runs); a decimal pid works too.
 Everything but `mark` only reads. `watch` writes DIR/maps.jsonl (one map per sample) and
 DIR/maps-summary.txt (MiB by mapping name over time, with the growth from the first sample). It
-can run next to any console runner without a lease of its own; start it after the game is up.
+can run next to any console runner without a lease of its own; start it after the game is up and
+stop it (--seconds) well before the runner closes the game: reading the map of an exiting process
+took the console off the network twice (2026-11-09).
 
 Protocol: PROTOCOL.md of the ps5debug-NG repository (v1.3). Requests are a 12-byte header
 (magic 0xFFAABBCC, command, body length) and a body, little-endian; status words come back
@@ -201,6 +203,10 @@ def watch(args, client):
         while True:
             elapsed = time.monotonic() - started
             try:
+                # Reading the map of a process that is exiting has taken the console down twice
+                # (kernel log ends at the exit's FMEM table): only sample a listed process.
+                if pid not in {p for _, p in client.processes()}:
+                    raise Ps5DebugError(f'process {pid} has exited')
                 entries = client.maps(pid)
             except (Ps5DebugError, OSError) as error:
                 print(f'{elapsed:6.0f} s  stopped: {error}', file=sys.stderr)

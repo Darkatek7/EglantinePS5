@@ -30,6 +30,12 @@ holds the console lease: start it once the game is up. It stops when the process
 It writes `maps.jsonl` (the whole map per sample) and `maps-summary.txt` (MiB per mapping name over
 time and the growth from the first sample).
 
+**Do not read the map of a process while it exits.** Twice (2026-11-09) the console went off the
+network, needing a reboot, when a runner closed MKW while `watch` was sampling it every 10 s. Both
+times the kernel log ended at the exit's `FMEM` table. `watch` now checks that the process is still
+listed before each sample, but that only narrows the window. Give `watch` a `--seconds` that ends
+well before the runner closes the game, and don't sample a warm-up run the runner will close.
+
 Reading the map:
 
 - `---` (no access) entries are reservations and guard pages and hold no memory. They are
