@@ -291,3 +291,8 @@ Where the pool is at the end (run6-1, 422 s): game 4.0 GB (+0.37 GB packed store
 What is left, by size: the driver's 3.8 GB (texture working set and render targets at 1x), Eden's heap
 (1.3 GB in use and growing), and the race-load peak (~1.5 GB within seconds, faster than 30 s cold
 packing can answer).
+
+Earlier packing (`EDEN_CRAM_PACK_BELOW_MIB=5120 EDEN_CRAM_PACK_COLD_S=15`, run8, 2 runs): 2.4 GB packed
+into 0.5 GB. Both reached the race; one was gone (home screen) between 241 and 441 s, the other ran
+out at 296 s (JIT code cache). Packing more of the game does not close the gap: what is left is the
+driver (~3.8 GB) and Eden's heap (~1.5–1.8 GB).
