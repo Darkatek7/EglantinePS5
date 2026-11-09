@@ -265,3 +265,29 @@ of that size.
 Twice the console went off the network (a reboot, ~20 min) when the runner closed MKW while
 `watch` was reading its map. The tool now checks the process is still listed, and the runs here
 sample only the measured run and stop 50 s before the runner closes the game.
+
+### Packing GPU-reachable slots too: MKW reaches the race without Pro memory, not reliably
+
+`EDEN_CRAM_PACK_GPU=1` (packing starts below 3 GiB largest free, slots cold for 30 s). These are now
+the defaults on this branch (`EDEN_CRAM_PACK=0` / `EDEN_CRAM_PACK_GPU=0` turn them off). 1.0–1.8 GB
+packed into 0.15–0.4 GB per session. Seven 500 s runs from the title into a Grand Prix, without
+Pro memory:
+
+| Run | Result |
+|---|---|
+| run5 | whole first race (lap 3/3 at 341 s, ~31 fps), into the second; 6 fps while it loads (pool at 2–4 MiB) |
+| run6-1 | race, then out of memory at 422 s (JIT code cache could not grow) |
+| run6-2 | race-load event (macro 0x21a "instruction limit exceeded"), then the game read float data as a pointer and panicked at 165 s |
+| run7 default-1 | out of memory at race load (171 s), ~1 GB packed |
+| run7 default-2 | whole first race, into the second |
+| run7 nozero-1 (`EDEN_GUEST_FREE_ZERO=0`) | app gone (PS5 home screen) by 341 s; the runner missed it |
+| run7 nozero-2 | black screen from race load, pool at 0 |
+
+Without packing: 0 of 3 reached the race. With it: 3 of 7, and 2 of 7 lasted ~300 s into it.
+Where the pool is at the end (run6-1, 422 s): game 4.0 GB (+0.37 GB packed store), driver 3.8 GB
+(texture cache at 6.4 GB "usage" against a 4 GB critical, with nothing it can delete), Eden heap
+1.77 GB (1.3 GB in use, +16 MiB every 20 s), the unpack reserve 256 MiB, the guest reserve 512 MiB.
+
+What is left, by size: the driver's 3.8 GB (texture working set and render targets at 1x), Eden's heap
+(1.3 GB in use and growing), and the race-load peak (~1.5 GB within seconds, faster than 30 s cold
+packing can answer).
