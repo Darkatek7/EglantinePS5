@@ -315,3 +315,16 @@ So without Pro memory two things are left:
 2. **The macro event.** It comes at race loads, more often with packing and a short pool. Every
    "app gone" run ended with it. It is the open item from #88: find where 0x1e6's parameters come
    from when it fails.
+
+### Idle blocks as a last resort (run11)
+
+Recovery (`eden_memory_recover`, used by the driver, the heap and now the JIT) only packed slots
+cold for 10 s, and the heap's non-waiting version got nothing while the scanner held the packing
+lock. Now, when packing falls short, the blocks kept for unpacking (256 MiB) and the guest's reserve
+(128 MiB) go back to the pool. run11, 3 runs: two ran the whole 500 s (race 1 to lap 3/3, then
+race 2: ~340 s of racing without Pro memory), and none ran out of memory. The give-back was not
+needed in them (packing covered every request), so those two are not proof of it. The third ended
+after the macro event at 254 s (app gone).
+
+Tally of GPU-packing runs since the JIT fix (run10, run11): 2 whole runs, 2 out of memory (heap,
+before the give-back), 2 ended by the macro event. **The macro event is now what ends most runs.**
