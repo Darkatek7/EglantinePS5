@@ -92,6 +92,8 @@ void ResetCounters() noexcept {
 
 // Freed pages cleared (GuestMemoryFreedPart, below).
 std::atomic<std::uint64_t> freed_part_calls{0}, freed_part_bytes{0};
+// Idle blocks RecoverMemory gave back (GiveBackIdleBlocks).
+std::atomic<std::uint64_t> idle_given_back{0}, idle_give_back_calls{0};
 
 bool LockSlot(SparseRange& range, std::size_t slot, bool count_wait = false) noexcept {
     auto& state = range.state[slot];
@@ -1902,6 +1904,44 @@ void ReleaseServiceBlocks(SparseRange& range) noexcept {
 // those unwritten for 10 s or more, until `bytes` went back. Returns what went back.
 std::atomic<std::uint64_t> recover_calls{0}, recovered_bytes{0};
 namespace {
+#ifdef PS5_NATIVE
+// The last resort of RecoverMemory: blocks the service holds idle (kept for unpacking, then the
+// guest's reserve) go back to the pool. Late in a long session without Pro memory the heap and
+// the JIT were refused their next piece and the app ended, while 768 MiB sat in these two; a
+// guest write or unpack that later finds the pool empty asks for packing as before.
+std::size_t GiveBackIdleBlocks(std::size_t bytes) noexcept {
+    std::size_t freed = 0;
+    while (freed < bytes) {
+        std::int64_t physical = -1;
+        Spin(unpack_keep_lock);
+        if (const std::size_t count = unpack_keep_count.load(std::memory_order_relaxed); count > 0) {
+            physical = unpack_keep[count - 1];
+            unpack_keep_count.store(count - 1, std::memory_order_relaxed);
+        }
+        unpack_keep_lock.clear(std::memory_order_release);
+        if (physical < 0) {
+            Spin(reserve_lock);
+            if (const std::size_t count = reserve_count.load(std::memory_order_relaxed); count > 0) {
+                physical = reserve[count - 1];
+                reserve_count.store(count - 1, std::memory_order_relaxed);
+            }
+            reserve_lock.clear(std::memory_order_release);
+        }
+        if (physical < 0) break;
+        if (sceKernelReleaseDirectMemory(physical, SparseSlot) != 0) std::abort();
+        freed += SparseSlot;
+    }
+    if (freed != 0) {
+        idle_given_back.fetch_add(freed, std::memory_order_relaxed);
+        if (idle_give_back_calls.fetch_add(1, std::memory_order_relaxed) < 24) {
+            char line[96];
+            const int length = std::snprintf(line, sizeof(line), "EDEN_CRAM idle blocks given back: %zu MiB\n", freed >> 20);
+            if (length > 0) Report(line);
+        }
+    }
+    return freed;
+}
+#endif
 std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept {
 #ifdef PS5_NATIVE
     SparseRange* const range = service_range.load(std::memory_order_acquire);
@@ -1912,15 +1952,16 @@ std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept {
         trimmed = static_cast<std::size_t>(eden_radv_private_radv_ps5_eden_trim(bytes));
     if (trimmed >= bytes) return trimmed;
     bytes -= trimmed;
-    if (range == nullptr || !PackEnabled() || pack_refused.load(std::memory_order_relaxed) || holding_pack) return trimmed;
+    if (range == nullptr || !PackEnabled() || pack_refused.load(std::memory_order_relaxed) || holding_pack)
+        return trimmed + GiveBackIdleBlocks(bytes);
     std::unique_lock pack_lock{pack_mutex, std::defer_lock};
     if (wait) pack_lock.lock();
-    else if (!pack_lock.try_lock()) return trimmed;
+    else if (!pack_lock.try_lock()) return trimmed + GiveBackIdleBlocks(bytes);
     holding_pack = true;
     struct Held { ~Held() { holding_pack = false; } } held;
     if (packed_slots.load(std::memory_order_acquire) == nullptr || cold_since.empty() ||
         recover_order.capacity() < cold_since.size())
-        return trimmed;
+        return trimmed + GiveBackIdleBlocks(bytes);
     const std::uint32_t now = ColdNow();
     recover_order.clear();
     for (std::size_t slot = 0; slot < cold_since.size(); ++slot)
@@ -1944,6 +1985,7 @@ std::size_t RecoverMemory(std::size_t bytes, bool wait) noexcept {
                                           wait ? "" : "_try", bytes >> 20, freed >> 20);
         if (length > 0) Report(line);
     }
+    if (freed < bytes) freed += GiveBackIdleBlocks(bytes - freed);
     return trimmed + freed;
 #else
     (void)bytes;
