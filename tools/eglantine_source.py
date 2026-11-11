@@ -4,7 +4,7 @@
 Where the PS5 build, the host's test build and the development switches need different code, the
 source has a chain of conditionals whose lines end in a fixed comment:
 
-    #if !defined(__PROSPERO__) // not PS5
+    #if !defined(__PROSPERO__) // not PS5        (or #if defined(__PROSPERO__) // PS5: a PS5-only block)
     #elif defined(EDEN_DEV_PROFILE) // PS5 development build
     #elif defined(EDEN_MKW_DIAGNOSTICS) // PS5 Mario Kart diagnostics
     #elif !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EGLANTINE = ROOT / 'Eglantine'
 LABELS = ('// not PS5', '// PS5 development build', '// PS5 Mario Kart diagnostics',
           '// PS5 without inline exclusive accesses', '// PS5 without the A32 fastmem window')
+PS5_ONLY = '#if defined(__PROSPERO__) // PS5'  # a PS5-only block, closed by END
 ELSE, END = '#else // PS5', '#endif // PS5'
 DEFAULTS = {'EDEN_INLINE_EXCLUSIVES', 'EDEN_A32_FASTMEM'}
 
@@ -54,6 +55,10 @@ def resolve(text, active):
         return (name in active) != expression.lstrip().startswith('!')
 
     for line in text.split('\n'):
+        if line == PS5_ONLY:
+            taken = '__PROSPERO__' in active
+            stack.append([taken, taken])
+            continue
         if line.endswith(LABELS) and line.startswith('#if '):
             taken = true(line[4:].split(' //')[0])
             stack.append([taken, taken])

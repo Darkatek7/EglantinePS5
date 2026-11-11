@@ -49,8 +49,15 @@ assert 'ThreadManager::~ThreadManager() { Stop(); }' in worker
 gpu = eglantine_source('src/video_core/gpu.cpp')
 assert 'GPU::~GPU() { impl->NotifyShutdown(); }' in gpu
 shutdown = gpu.split('    void NotifyShutdown() {', 1)[1].split('    /// Obtain', 1)[0]
-assert 'sync_cv.notify_all();\n        }\n        gpu_thread.Stop();' in shutdown
-assert shutdown.index('gpu_thread.Stop();') < shutdown.index('sync_requests.clear();') < shutdown.index('sync_requests_stopped = true;')
+# The worker stops first; then the sync requests it can no longer run are dropped and their waiters,
+# and the guest's sync waiters, released (they would wait forever in host code otherwise).
+assert shutdown.index('gpu_thread.NotifyShutdown();') < shutdown.index('sync_requests.clear();') \
+    < shutdown.index('sync_requests_dropped = true;') < shutdown.index('sync_request_cv.notify_all();')
+assert shutdown.index('shutting_down.store(true') < shutdown.index('sync_cv.notify_all();')
+# It can be joined first: the waits on the guest it may be in give up once the system shuts down.
+assert 'void ThreadManager::NotifyShutdown() {\n    Stop();' in worker
+assert 'while (!synced && !system.IsShuttingDown())' in eglantine_source('src/video_core/dma_pusher.cpp')
+assert 'while (word != value && !dma_pusher.system.IsShuttingDown())' in eglantine_source('src/video_core/engines/puller.cpp')
 destructor = gpu.split('    ~Impl() {', 1)[1].split('\n    std::shared_ptr<Control::ChannelState> CreateChannel', 1)[0]
 assert destructor.index('NotifyShutdown();') < destructor.index('renderer->Context().MakeCurrent();')
 assert destructor.index('renderer->Context().MakeCurrent();') < destructor.index('glFinish();') < destructor.index('renderer.reset();')

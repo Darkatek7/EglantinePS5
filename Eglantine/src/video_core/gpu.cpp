@@ -207,9 +207,10 @@ struct GPU::Impl {
     template <typename Func>
     [[nodiscard]] u64 RequestSyncOperation(Func&& action) {
         std::unique_lock lck{sync_request_mutex};
-#if !defined(__PROSPERO__) // not PS5
-#else // PS5
-        if (sync_requests_stopped) return CurrentSyncRequestFence();
+#if defined(__PROSPERO__) // PS5
+        // After NotifyShutdown nothing runs a request, and one queued then would keep a pointer
+        // into its caller's frame: return at once (WaitForSyncOperation does not wait either).
+        if (sync_requests_dropped) return CurrentSyncRequestFence();
 #endif // PS5
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
@@ -524,10 +525,6 @@ struct GPU::Impl {
     std::deque<size_t> free_swap_counters;
     std::deque<size_t> request_swap_counters;
     std::mutex request_swap_mutex;
-#if !defined(__PROSPERO__) // not PS5
-#else // PS5
-    bool sync_requests_stopped{}; // Protected by sync_request_mutex.
-#endif // PS5
     u64 pending_composite_fence{};
     VideoCommon::GPUThread::ThreadManager gpu_thread;
 };

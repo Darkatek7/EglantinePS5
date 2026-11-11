@@ -218,7 +218,15 @@ bool DmaPusher::Step() {
 
     if (signal_sync && !synced) {
         std::unique_lock lk(sync_mutex);
+#if !defined(__PROSPERO__) // not PS5
         sync_cv.wait(lk, [this]() { return synced.load(); });
+#else // PS5
+        // A wait in flight unwinds once the system shuts down, so that the GPU worker can be
+        // joined (GPU::Impl::NotifyShutdown, tools/check-gpu-sync-stop.py).
+        while (!synced && !system.IsShuttingDown())
+            sync_cv.wait_for(lk, std::chrono::milliseconds(10));
+        if (system.IsShuttingDown()) return false;
+#endif // PS5
         signal_sync = false;
         synced = false;
     }

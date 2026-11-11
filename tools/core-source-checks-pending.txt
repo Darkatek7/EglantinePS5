@@ -3,8 +3,6 @@
 # repository) or with a port edit that no longer applied to this core. In a lenient build
 # (EDEN_PORT_LENIENT=1, the default for now, tools/build-package.sh) they report and the build goes
 # on; every check not listed here must pass. Remove a line when its change is in Eglantine/.
-check-native-gpu-thread       # GPU shutdown order: wake sync waiters, then join the worker (gpu.cpp)
-check-gpu-sync-stop           # GPU sync requests dropped at shutdown (gpu.cpp, dma_pusher.cpp, puller.cpp)
 check-gpu-producer-stop       # host command queue and completion (patches 0004, 0006)
 check-fence-requirements      # readback diagnostics (patch 0004: video_core/readback_diagnostics.h)
 check-bananza-terrain         # Bananza terrain counters (patch 0008)
