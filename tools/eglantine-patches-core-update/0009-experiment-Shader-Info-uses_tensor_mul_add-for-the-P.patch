@@ -1,0 +1,39 @@
+From 381f33add92ea7b2db3781e434af89133372f9b7 Mon Sep 17 00:00:00 2001
+From: Heyde-Moura <moura.heyde@gmail.com>
+Date: Wed, 11 Nov 2026 10:52:54 +0000
+Subject: [PATCH 09/22] experiment: Shader::Info::uses_tensor_mul_add for the
+ PS5 NIR backend
+
+---
+ src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp | 1 +
+ src/shader_recompiler/shader_info.h                       | 2 ++
+ 2 files changed, 3 insertions(+)
+
+diff --git a/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp b/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
+index 43599e10a3..cb6470933a 100644
+--- a/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
++++ b/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
+@@ -520,6 +520,7 @@ void VisitUsages(Info& info, IR::Inst& inst) {
+         info.uses_rescaling_uniform = true;
+         break;
+     case IR::Opcode::TensorMulAdd:
++        info.uses_tensor_mul_add = true;
+         info.uses_subgroup_shuffles = true;
+         info.uses_fp32_denorms_preserve = true;
+         info.uses_subgroup_invocation_id = true;
+diff --git a/src/shader_recompiler/shader_info.h b/src/shader_recompiler/shader_info.h
+index 11dd12f6d8..c49c003746 100644
+--- a/src/shader_recompiler/shader_info.h
++++ b/src/shader_recompiler/shader_info.h
+@@ -361,6 +361,8 @@ struct Info {
+     bool requires_coherent_image_memory{};
+     /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
+     bool uses_cooperative_matrix{};
++    /// The program has TensorMulAdd (HMMA): the PS5 NIR backend sizes shared memory views by it.
++    bool uses_tensor_mul_add{};
+     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
+     /// is a candidate and its bound length (not an NVN size word) limits the range.
+     bool native_global_bounds{};
+-- 
+2.47.3
+

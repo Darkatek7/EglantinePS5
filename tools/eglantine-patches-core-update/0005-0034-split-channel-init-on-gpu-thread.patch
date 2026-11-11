@@ -1,0 +1,65 @@
+From 904cab7dbabfbf27c1d34d4b266b5a367613e62a Mon Sep 17 00:00:00 2001
+From: Heyde-Moura <moura.heyde@gmail.com>
+Date: Wed, 11 Nov 2026 10:24:22 +0000
+Subject: [PATCH 05/22] 0034-split-channel-init-on-gpu-thread
+
+(cherry picked from commit b000a11ba5d42a276fb3ff84db8c84a63c9f8ab2)
+---
+ src/video_core/control/channel_state.h |  3 +++
+ src/video_core/gpu.cpp                 | 16 ++++++++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/src/video_core/control/channel_state.h b/src/video_core/control/channel_state.h
+index 80811c1458..9da6c97997 100644
+--- a/src/video_core/control/channel_state.h
++++ b/src/video_core/control/channel_state.h
+@@ -62,6 +62,9 @@ struct ChannelState {
+     s32 bind_id = -1;
+     u64 program_id = 0;
+     bool initialized = false;
++    /// With the GPU thread split, the caches' per-channel state is set up by the GPU thread
++    /// (in order with the split's back), when it binds the channel.
++    bool rasterizer_pending = false;
+ };
+ 
+ } // namespace Control
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 9afeab1941..3f413224d3 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -75,6 +75,12 @@ struct GPU::Impl {
+         if (bound_channel != channel_id) {
+             auto it = channels.find(channel_id);
+             ASSERT(it != channels.end());
++            // A channel set up while the GPU thread was split: its caches' state now, on the
++            // thread that binds it (the split's back, in order with its draws).
++            if (it->second->rasterizer_pending) {
++                it->second->rasterizer_pending = false;
++                renderer->ReadRasterizer()->InitializeChannel(*it->second);
++            }
+             bound_channel = channel_id;
+             current_channel = it->second.get();
+             renderer->ReadRasterizer()->BindChannel(*current_channel);
+@@ -88,9 +94,19 @@ struct GPU::Impl {
+     void InitChannel(Control::ChannelState& to_init, u64 program_id) {
+         to_init.Init(system, program_id);
+         to_init.BindRasterizer(renderer->ReadRasterizer());
++        // The caches' per-channel state (channel lists, address-space page tables) belongs to
++        // the split's back thread while it runs: set up from here (a guest thread) it changed
++        // under the back's draws, which then crashed at startup on a null image in a barrier or
++        // on garbage commands (Bananza: 5 of 10 starts with the split, 0 of 9 without). The GPU
++        // thread that binds the channel finishes it (BindChannel).
++        if (VideoCommon::GpuSplit::Get().Active()) {
++            to_init.rasterizer_pending = true;
++            return;
++        }
+         renderer->ReadRasterizer()->InitializeChannel(to_init);
+     }
+ 
++
+     void InitAddressSpace(Tegra::MemoryManager& memory_manager) {
+         memory_manager.BindRasterizer(renderer->ReadRasterizer());
+     }
+-- 
+2.47.3
+

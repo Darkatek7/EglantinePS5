@@ -1,0 +1,39 @@
+From 76a5e387640838808d7b2de4d72b6a72b16652fa Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 12:01:24 +0000
+Subject: [PATCH 18/22] experiment diag: report buffer-cache buffers of 64 MiB
+ and more on stderr
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/buffer_cache/buffer_cache.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index a9fc5a1e03..48a6b31a31 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -9,6 +9,7 @@
+ #include "video_core/buffer_cache/uniform_cache_history.h"
+ 
+ #include <algorithm>
++#include <cstdio>
+ #include <atomic>
+ #include <chrono>
+ #include <cstdlib>
+@@ -3628,6 +3629,12 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
+     wanted_size = static_cast<u32>(device_addr_end - device_addr);
+     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
+     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
++    // PS5 experiment diagnostic: very large buffers (the shared pool ran out in CreateBuffer).
++    if (size >= (64u << 20)) {
++        std::fprintf(stderr, "EDEN_BIG_BUFFER addr=%#llx wanted=%u MiB size=%u MiB joins=%zu stream_leap=%d\n",
++                     static_cast<unsigned long long>(device_addr), wanted_size >> 20, size >> 20,
++                     overlap.ids.size(), int(overlap.has_stream_leap));
++    }
+     const BufferId new_buffer_id =
+         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
+     auto& new_buffer = slot_buffers[new_buffer_id];
+-- 
+2.47.3
+

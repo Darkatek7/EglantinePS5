@@ -1,0 +1,55 @@
+From fb672e29a88eea059989f98b44bed562df0af3e5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 12:34:28 +0000
+Subject: [PATCH 22/22] experiment: 0024 texture cache ceiling ported;
+ transcode bound 64 MiB by default
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/video_core/renderer_vulkan/vk_texture_cache.cpp | 4 ++--
+ src/video_core/texture_cache/texture_cache.h        | 7 +++++++
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 4ae16d244e..34a303e260 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -5158,7 +5158,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+     // each decode image is an RGBA copy of every level, alive until the GPU used it. A scene load
+     // makes hundreds in a burst, and the pool the console's GPU shares with the CPU ran out
+     // (Ocarina of Time: driver memory 0.6 -> 5.2 GB in 4 s). Copies in flight and kept for reuse
+-    // are bounded by bytes (256 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB), waiting for the oldest
++    // are bounded by bytes (64 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB; 256 MiB still thrashed), waiting for the oldest
+     // only, and what is recorded is submitted every 32 MiB so the GPU works through them.
+     {
+         using namespace Common::Literals;
+@@ -5171,7 +5171,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+         };
+         static const u64 held_limit = [] {
+             const char* value = std::getenv("EDEN_PS5_TRANSCODE_PENDING_MIB");
+-            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{256_MiB};
++            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{64_MiB};
+         }();
+         PendingTranscode shape{};
+         shape.width = width;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index ccf8c69f76..ecb7cf7d9b 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -339,6 +339,13 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
+         (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
+     minimum_memory =
+         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
++    // Patch 0024 (switch2-texture-cache-ceiling), ported: a Switch 2 title shares the console's
++    // one pool with its own memory, Eden's heap and the driver; images held to 4.5/5.3 GB ran it
++    // out, 3.5/4 GB did not, at the same FPS. A ceiling only; the variables below still override.
++    if (Settings::CurrentProgramIsSwitch2()) {
++        expected_memory = (std::min)(expected_memory, u64{3584} << 20);
++        critical_memory = (std::min)(critical_memory, u64{4096} << 20);
++    }
+     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB raise the collector's thresholds past
+     // MaxCriticalMemory, but never past what the device budget allows: set outright, they kept
+     // the cache above a shrinking budget (other programs' video memory, out-of-memory margins) and
+-- 
+2.47.3
+

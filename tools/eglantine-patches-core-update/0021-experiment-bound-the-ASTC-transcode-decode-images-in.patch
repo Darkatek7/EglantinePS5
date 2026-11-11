@@ -1,0 +1,76 @@
+From 61ad5d24f639bc57fa7bfefd94a2077b6d82ed70 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 12:19:20 +0000
+Subject: [PATCH 21/22] experiment: bound the ASTC transcode decode images in
+ flight (PS5 shared pool)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../renderer_vulkan/vk_texture_cache.cpp      | 51 +++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 0065ca841d..4ae16d244e 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -5154,6 +5154,57 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
+     // A decode image of the same shape the GPU is done with: title 1's title screen decodes
+     // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
+     // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
++    // PS5 experiment (the port's bound, tools/prepare-vulkan-port.py, on this core's reuse list):
++    // each decode image is an RGBA copy of every level, alive until the GPU used it. A scene load
++    // makes hundreds in a burst, and the pool the console's GPU shares with the CPU ran out
++    // (Ocarina of Time: driver memory 0.6 -> 5.2 GB in 4 s). Copies in flight and kept for reuse
++    // are bounded by bytes (256 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB), waiting for the oldest
++    // only, and what is recorded is submitted every 32 MiB so the GPU works through them.
++    {
++        using namespace Common::Literals;
++        const auto bytes_of = [](const PendingTranscode& t) {
++            u64 bytes = 0;
++            for (u32 level = 0; level < t.levels; ++level) {
++                bytes += u64{(std::max)(t.width >> level, 1U)} * (std::max)(t.height >> level, 1U) * 4;
++            }
++            return bytes * t.layers;
++        };
++        static const u64 held_limit = [] {
++            const char* value = std::getenv("EDEN_PS5_TRANSCODE_PENDING_MIB");
++            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{256_MiB};
++        }();
++        PendingTranscode shape{};
++        shape.width = width;
++        shape.height = height;
++        shape.levels = levels;
++        shape.layers = layers;
++        const u64 decode_bytes = bytes_of(shape);
++        u64 held_bytes = 0, recorded_bytes = 0, spare_bytes = 0;
++        for (const PendingTranscode& held : pending_transcodes) {
++            const u64 bytes = bytes_of(held);
++            held_bytes += bytes;
++            recorded_bytes += held.tick >= scheduler.CurrentTick() ? bytes : 0;
++        }
++        for (const PendingTranscode& spare : free_transcodes) {
++            spare_bytes += bytes_of(spare);
++        }
++        if (held_bytes + spare_bytes + decode_bytes > held_limit) {
++            std::erase_if(free_transcodes, [&](const PendingTranscode& t) {
++                return !(t.width == width && t.height == height && t.levels == levels &&
++                         t.layers == layers);
++            });
++        }
++        if (recorded_bytes >= 32_MiB) {
++            scheduler.Flush();
++        }
++        while (!pending_transcodes.empty() && held_bytes + decode_bytes > held_limit) {
++            scheduler.Wait(pending_transcodes.front().tick);
++            while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
++                held_bytes -= bytes_of(pending_transcodes.front());
++                pending_transcodes.pop_front();
++            }
++        }
++    }
+     const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
+         return t.width == width && t.height == height && t.levels == levels && t.layers == layers;
+     });
+-- 
+2.47.3
+
