@@ -361,6 +361,8 @@ struct Info {
     bool requires_coherent_image_memory{};
     /// Set by the SPIR-V backend when HMMA runs on cooperative matrices, which need full subgroups
     bool uses_cooperative_matrix{};
+    /// The program has TensorMulAdd (HMMA): the PS5 NIR backend sizes shared memory views by it.
+    bool uses_tensor_mul_add{};
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
