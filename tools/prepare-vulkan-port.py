@@ -1595,9 +1595,11 @@ configure_phases = [
      '    // Sampler and image tables synced, uniform-buffer state set.\n'
      '    ::Eden::Performance::Mark(::Eden::Performance::cfg_sync, since);'),
     ('        texture_cache.FillImageViews(std::span(views.data(), views.size()), false,\n'
-     '                                     Spec::has_images);\n    }\n',
+     '                                     Spec::has_images);\n'
+     '        if (memo_hit && verify_memo) {\n            texture_cache.LogPrepares(nullptr, false);\n        }\n    }\n',
      '        texture_cache.FillImageViews(std::span(views.data(), views.size()), false,\n'
-     '                                     Spec::has_images);\n    }\n'
+     '                                     Spec::has_images);\n'
+     '        if (memo_hit && verify_memo) {\n            texture_cache.LogPrepares(nullptr, false);\n        }\n    }\n'
      '    // Every texture handle read out of guest memory, every sampler and view filled.\n'
      '    ::Eden::Performance::Mark(::Eden::Performance::cfg_read, since);\n'
      '    long long since_bind = ::Eden::Performance::MarkStart();'),
