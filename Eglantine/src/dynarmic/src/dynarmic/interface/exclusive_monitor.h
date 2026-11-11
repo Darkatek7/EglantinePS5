@@ -9,7 +9,6 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,17 +37,11 @@ public:
         static_assert(std::is_trivially_copyable_v<T>);
         const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
 
-#ifdef ARCHITECTURE_arm64
-        std::atomic_ref<VAddr>{exclusive_addresses[processor_id]}.store(masked_address, std::memory_order_release);
-        const T value = op();
-        std::memcpy(exclusive_values[processor_id].data(), &value, sizeof(T));
-#else
         Lock();
         exclusive_addresses[processor_id] = masked_address;
         const T value = op();
         std::memcpy(exclusive_values[processor_id].data(), &value, sizeof(T));
         Unlock();
-#endif
         return value;
     }
 
@@ -67,9 +60,7 @@ public:
         std::memcpy(&saved_value, exclusive_values[processor_id].data(), sizeof(T));
         const bool result = op(saved_value);
 
-#ifndef ARCHITECTURE_arm64
         Unlock();
-#endif
         return result;
     }
 

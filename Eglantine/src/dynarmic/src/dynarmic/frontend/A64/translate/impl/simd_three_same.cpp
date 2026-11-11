@@ -342,7 +342,7 @@ bool SaturatingArithmeticOperation(TranslatorVisitor& v, bool Q, Imm<2> size, Ve
     return true;
 }
 
-bool SaturatingShiftLeft(TranslatorVisitor& v, bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd, SignednessSTS sign, bool rounding) {
+bool SaturatingShiftLeft(TranslatorVisitor& v, bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd, SignednessSTS sign) {
     if (size == 0b11 && !Q) {
         return v.ReservedValue();
     }
@@ -354,12 +354,10 @@ bool SaturatingShiftLeft(TranslatorVisitor& v, bool Q, Imm<2> size, Vec Vm, Vec 
     const IR::U128 operand2 = v.V(datasize, Vm);
     const IR::U128 result = [&] {
         if (sign == SignednessSTS::Signed) {
-            return rounding ? v.ir.VectorSignedSaturatedRoundingShiftLeft(esize, operand1, operand2)
-                            : v.ir.VectorSignedSaturatedShiftLeft(esize, operand1, operand2);
+            return v.ir.VectorSignedSaturatedShiftLeft(esize, operand1, operand2);
         }
 
-        return rounding ? v.ir.VectorUnsignedSaturatedRoundingShiftLeft(esize, operand1, operand2)
-                        : v.ir.VectorUnsignedSaturatedShiftLeft(esize, operand1, operand2);
+        return v.ir.VectorUnsignedSaturatedShiftLeft(esize, operand1, operand2);
     }();
 
     v.V(datasize, Vd, result);
@@ -828,12 +826,8 @@ bool TranslatorVisitor::CMTST_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
     return true;
 }
 
-bool TranslatorVisitor::SQRSHL_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
-    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Signed, true);
-}
-
 bool TranslatorVisitor::SQSHL_reg_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
-    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Signed, false);
+    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Signed);
 }
 
 bool TranslatorVisitor::SRSHL_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
@@ -856,12 +850,8 @@ bool TranslatorVisitor::SSHL_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
     return true;
 }
 
-bool TranslatorVisitor::UQRSHL_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
-    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Unsigned, true);
-}
-
 bool TranslatorVisitor::UQSHL_reg_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
-    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Unsigned, false);
+    return SaturatingShiftLeft(*this, Q, size, Vm, Vn, Vd, SignednessSTS::Unsigned);
 }
 
 bool TranslatorVisitor::URSHL_2(bool Q, Imm<2> size, Vec Vm, Vec Vn, Vec Vd) {
