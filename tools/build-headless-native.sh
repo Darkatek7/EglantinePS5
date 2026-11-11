@@ -80,11 +80,16 @@ python3 -B "$root/tools/check-sparse-header.py" "$scratch/native-local"
 python3 -B "$root/tools/check-macro-headers.py" "$scratch/native-local"
 python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/native-local"
 if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
-    python3 -B "$root/tools/check-vulkan-handoff.py"
-    python3 -B "$root/tools/check-transient-images.py"
-    python3 -B "$root/tools/check-native-allocator-header.py"
-    python3 -B "$root/tools/check-gpu-time-probe.py"
-    python3 -B "$root/tools/check-fence-requirements.py"
+    # EDEN_PORT_LENIENT=1 (experimental core updates): these checks compile pinned-source excerpts;
+    # a failure is reported and the build goes on.
+    for check in check-vulkan-handoff check-transient-images check-native-allocator-header \
+                 check-gpu-time-probe check-fence-requirements; do
+        if [[ ${EDEN_PORT_LENIENT:-0} == 1 ]]; then
+            python3 -B "$root/tools/$check.py" > /dev/null 2>&1 || echo "EDEN_PORT_LENIENT: $check failed (pinned-source check)" >&2
+        else
+            python3 -B "$root/tools/$check.py"
+        fi
+    done
 fi
 # Source checks of the release configuration (development builds opt out: EDEN_SKIP_SOURCE_CHECKS=1).
 [[ ${EDEN_SKIP_SOURCE_CHECKS:-0} == 1 ]] && exit 0
