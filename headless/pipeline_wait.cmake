@@ -5,7 +5,7 @@ foreach(pipeline_header IN ITEMS vk_graphics_pipeline.h vk_compute_pipeline.h)
     set(pipeline_wait_old "    std::condition_variable build_condvar;\n    std::mutex build_mutex;\n")
     string(FIND "${pipeline_source}" "${pipeline_wait_old}" pipeline_wait_at)
     if(pipeline_wait_at LESS 0)
-        message(FATAL_ERROR "Pinned ${pipeline_header} build wait changed")
+        eden_pinned_failed("Pinned ${pipeline_header} build wait changed")
     endif()
     string(REPLACE "${pipeline_wait_old}"
         "    ::Eden::StripedCondition build_condvar;\n    ::Eden::StripedMutex build_mutex;\n"

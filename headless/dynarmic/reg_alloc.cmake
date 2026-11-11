@@ -11,7 +11,7 @@
 function(eden_reg_alloc_require source anchor what)
     string(FIND "${source}" "${anchor}" at)
     if(at LESS 0)
-        message(FATAL_ERROR "Pinned register allocator changed (${what})")
+        eden_pinned_failed("Pinned register allocator changed (${what})")
     endif()
 endfunction()
 

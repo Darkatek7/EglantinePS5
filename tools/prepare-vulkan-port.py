@@ -8,6 +8,13 @@ report = '--report' in sys.argv
 source, output = map(Path, [a for a in sys.argv[1:] if a != '--report'])
 port = Path(__file__).resolve().parents[1] / 'headless'
 broken = []
+import os
+# EDEN_PORT_LENIENT=1 (experimental core updates only): an anchor that no longer matches skips its
+# edit instead of stopping the build; every skip is listed at the end and in EDEN_PORT_SKIPPED.
+lenient = os.environ.get('EDEN_PORT_LENIENT') == '1'
+skipped = []
+def skip(where, text):
+    skipped.append(f'{where}: {text[:90]!r}')
 def adapt(relative, destination, replacements):
     text = (source / relative).read_text()
     for old, new in replacements:
@@ -32,6 +39,9 @@ def adapt(relative, destination, replacements):
         if text.count(old) != 1:
             if report:
                 broken.append(f"{relative}: {old[:70]!r} (matches {text.count(old)})")
+                continue
+            if lenient:
+                skip(relative, old)
                 continue
             raise RuntimeError(f"Pinned Vulkan anchor changed: {relative}: {old[:60]}")
         text = text.replace(old, new)
@@ -1111,137 +1121,144 @@ adapt('src/video_core/vulkan_common/vulkan_wrapper.cpp', 'vulkan_wrapper.cpp', [
     ('Check(dld->vkCreateComputePipelines(', 'auto timer = Eden::Performance::VulkanTimer(1);\n    Check(dld->vkCreateComputePipelines('),
 ])
 download_source = (source / 'src/video_core/texture_cache/texture_cache.h').read_text()
-download_begin = download_source.index('void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size)')
-download_loop = download_source.index('    for (const ImageId image_id : images) {', download_begin)
-download_prefix = download_source[download_begin:download_loop]
-# Reuse DeleteImage's exact accounting to stop lookahead when its existing
-# pressure policy changes. Fail on source drift rather than inventing a budget.
-delete_begin = download_source.index('    if (image.HasScaled()) {', download_source.index('void TextureCache<P>::DeleteImage('))
-delete_end = download_source.index('    const GPUVAddr gpu_addr', delete_begin)
-reclaimed_bytes = (download_source[delete_begin:delete_end]
-                   .replace('total_used_memory -=', 'bytes +=')
-                   .replace('slot_images[image_id]', 'image'))
-assert 'image_id' not in reclaimed_bytes, 'DeleteImage accounting needs adapting to an image reference'
-gc_begin = download_source.index('void TextureCache<P>::RunGarbageCollector() {')
-gc_end = download_source.index('\ntemplate <class P>', gc_begin)
-gc_original = download_source[gc_begin:gc_end]
-gc = gc_original
-gc_setup = '''    const auto ReclaimedBytes = [&](const Image& image) {
-        u64 bytes = 0;
-''' + reclaimed_bytes + '''        return bytes;
-    };
-''' + (port / 'vulkan_gc_downloads.inc').read_text()
-cleanup_begin = gc.index('    const auto Cleanup = [')
-cleanup_end = gc.index('](ImageId image_id)', cleanup_begin) + 1
-cleanup_capture = gc[cleanup_begin:cleanup_end]
-# Eglantine's own block-order walk (tools/eglantine-patches/0012, Collect) gives way to
-# ForEachCandidate (vulkan_gc_downloads.inc): the same order, but over up to 1,024 candidates
-# instead of 8 per eviction allowed, then on oldest first, and the download lookahead walks it too.
-collect_begin = gc.index('    const auto Collect = [&] {')
-collect_begin = gc.rindex('    };\n', 0, collect_begin) + len('    };\n')  # with 0012's comment
-collect_end = gc.index('    Configure(false);', collect_begin)
-collect_original = gc[collect_begin:collect_end]
-for old, new in [
-    (cleanup_capture,
-     gc_setup + '\n    const auto Cleanup = [&, this]'),
-    (collect_original,
-     '    const auto Collect = [&] { ForEachCandidate(frame_tick - ticks_to_destroy, Cleanup); };\n'),
-    ('        if (must_download) {',
-     '        if (must_download && KeepLargeDirty(image)) {\n            return false;\n        }\n'
-     '        if (must_download && !TakePrefetched(image_id, image)) {'),
-    # Time the per-image drain Cleanup still takes for an image the prefetch could not batch.
-    # One GPU pipeline wait per eviction, against one wait for a whole batch in the batched path:
-    # this is the stall the prefetch exists to remove, so keep it visible.
-    ('            image.DownloadMemory(map, copies);\n            runtime.Finish();\n'
-     '            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);',
-     '            image.DownloadMemory(map, copies);\n'
-     '            {\n'
-     '                const ::Eden::Performance::Timer drain_timer(\n'
-     '                    ::Eden::Performance::gc_unbatched_drain, 1);\n'
-     '                runtime.Finish();\n'
-     '            }\n'
-     '            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);'),
-    ('(!high_priority_mode && must_download)) {', '(!DirtyEvictions() && must_download)) {'),
-    ('    Configure(false);', '    Configure(false);\n    PrefetchDownloads();'),
-    ('        Configure(true);', '        Configure(true);\n        PrefetchDownloads();'),
-    # The eviction budget counts visits, not evictions: skipped images (decoding,
-    # costly, or dirty images kept below the critical mark) burn it and stop the
-    # scan, so kept images shield everything behind them. Count evictions; bound
-    # the scan separately. gc_scan=upstream restores visit counting.
-    ('    size_t num_iterations = 0;',
-     '    size_t num_iterations = 0;\n    size_t num_scanned = 0;\n    constexpr size_t max_scanned = 8192;'),
-    ('        if (num_iterations == 0) {\n            return true;\n        }\n        --num_iterations;',
-     '        if (num_iterations == 0 || num_scanned >= max_scanned) {\n            return true;\n        }\n        ++num_scanned;\n'
-     '        if (::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }'),
-    # A costly image (ASTC kept as BC3, converted on the CPU) goes only past Eden's own critical
-    # mark, not when the console's pool alone is critical: rebuilding it decodes it again on the
-    # CPU, in memory the pool did not have (Mario Kart World: 1,561 evicted in one window, 3.4 GB
-    # of conversions and uploads in the next, and the decoder's allocation ended the session).
-    ('        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!DirtyEvictions() && must_download)) {',
-     '        const bool costly_kept = !(aggressive_mode && total_used_memory >= critical_memory) &&\n'
-     '                                 !::Eden::Performance::gc_old_costly && True(image.flags & ImageFlagBits::CostlyLoad);\n'
-     '        if (costly_kept || (!DirtyEvictions() && must_download)) {'),
-    ('            probe_costly_skips += !aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad);\n',
-     '            probe_costly_skips += costly_kept;\n'),
-    ('            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n',
-     '            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n'
-     '        if (!::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }\n'),
-    # The aggressive pass gets its own scan allowance: Configure resets the
-    # eviction budget per pass, and the scan counter must reset with it, or a
-    # first pass spent on skips would stillborn the second one. Runs after the
-    # Configure(true) pair above, whose first line this matches.
-    ('        Configure(true);',
-     '        Configure(true);\n        num_scanned = 0;'),
-    # While the console's pool is short (performance.h, GraphicsMemoryIsShort) the collector
-    # works as if past its first mark, past both once the pool is critical (GraphicsMemoryIsCritical),
-    # and stays so for the whole run instead of easing off after one eviction under a mark the
-    # pool never reaches.
-    ('    u64 ticks_to_destroy = 0;\n',
-     '    u64 ticks_to_destroy = 0;\n    const bool memory_short = ::Eden::Performance::GraphicsMemoryIsShort();\n'),
-    ('        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n',
-     '        if (memory_short) {\n'
-     '            // Short but not critical, only what 600 frames left unused goes (EDEN_NX2_TC_SHORT_AGE):\n'
-     '            // at 60, and 10 whenever use passed the texture cache\'s own critical mark, a race\n'
-     '            // evicted and rebuilt 1,000-2,400 textures every 600 frames, many still in use, while\n'
-     '            // the pool stayed short throughout (an image freed inside a graphics block does not\n'
-     '            // give the pool a larger free block). On the console the pool decides: critical\n'
-     '            // (GraphicsMemoryIsCritical) collects as before.\n'
-     '            static const u64 short_age = [] {\n'
-     '                const char* value = std::getenv("EDEN_NX2_TC_SHORT_AGE");\n'
-     '                return value != nullptr ? std::strtoull(value, nullptr, 10) : 600ULL;\n'
-     '            }();\n'
-     '            high_priority_mode = true;\n'
-     '            aggressive_mode = allow_aggressive && ::Eden::Performance::GraphicsMemoryIsCritical();\n'
-     '            ticks_to_destroy = (std::max)(aggressive_mode ? u64{10} : short_age, min_age);\n'
-     '        }\n'
-     '        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n'),
-    ('        if (aggressive_mode && total_used_memory < critical_memory) {',
-     '        if (aggressive_mode && !memory_short && total_used_memory < critical_memory) {'),
-    ('        } else if (high_priority_mode && total_used_memory < expected_memory) {',
-     '        } else if (high_priority_mode && !memory_short && total_used_memory < expected_memory) {'),
-    ('    if (total_used_memory >= critical_memory) {\n        Configure(true);',
-     '    if (total_used_memory >= critical_memory || memory_short) {\n        Configure(true);'),
-    # While the pool is short, costly images 300 frames unused (a course left behind) go too, in a
-    # pass of their own: kept whenever only the pool was short, Mario Kart World's next course took
-    # 1.2 GB of graphics memory within five seconds with nothing the collector could give back, and
-    # waiting until the pool was critical left a course load too little room (pro27: 1.37 GB usable,
-    # then out of memory within one window). On a light frame (a loading screen: astc_policy.h)
-    # the course left behind is unused after 10 frames already, and the next one is about to load.
-    ('        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n',
-     '        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n'
-     '    const u64 old_age = ::Eden::AstcPolicy::InBackground() ? 300 : 10;\n'
-     '    if (memory_short && frame_tick > old_age) {\n'
-     '        Configure(true);\n'
-     '        num_scanned = 0;\n'
-     '        ::Eden::Performance::gc_old_costly = true;\n'
-     '        PrefetchDownloads();\n'
-     '        ForEachCandidate(frame_tick - old_age, Cleanup);\n'
-     '        ::Eden::Performance::gc_old_costly = false;\n'
-     '    }\n'),
-]:
-    if gc.count(old) != 1:
-        raise RuntimeError(f'Pinned GC anchor changed: {old}')
-    gc = gc.replace(old, new)
+try:
+    download_begin = download_source.index('void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size)')
+    download_loop = download_source.index('    for (const ImageId image_id : images) {', download_begin)
+    download_prefix = download_source[download_begin:download_loop]
+    # Reuse DeleteImage's exact accounting to stop lookahead when its existing
+    # pressure policy changes. Fail on source drift rather than inventing a budget.
+    delete_begin = download_source.index('    if (image.HasScaled()) {', download_source.index('void TextureCache<P>::DeleteImage('))
+    delete_end = download_source.index('    const GPUVAddr gpu_addr', delete_begin)
+    reclaimed_bytes = (download_source[delete_begin:delete_end]
+                       .replace('total_used_memory -=', 'bytes +=')
+                       .replace('slot_images[image_id]', 'image'))
+    assert 'image_id' not in reclaimed_bytes, 'DeleteImage accounting needs adapting to an image reference'
+    gc_begin = download_source.index('void TextureCache<P>::RunGarbageCollector() {')
+    gc_end = download_source.index('\ntemplate <class P>', gc_begin)
+    gc_original = download_source[gc_begin:gc_end]
+    gc = gc_original
+    gc_setup = '''    const auto ReclaimedBytes = [&](const Image& image) {
+            u64 bytes = 0;
+    ''' + reclaimed_bytes + '''        return bytes;
+        };
+    ''' + (port / 'vulkan_gc_downloads.inc').read_text()
+    cleanup_begin = gc.index('    const auto Cleanup = [')
+    cleanup_end = gc.index('](ImageId image_id)', cleanup_begin) + 1
+    cleanup_capture = gc[cleanup_begin:cleanup_end]
+    # Eglantine's own block-order walk (tools/eglantine-patches/0012, Collect) gives way to
+    # ForEachCandidate (vulkan_gc_downloads.inc): the same order, but over up to 1,024 candidates
+    # instead of 8 per eviction allowed, then on oldest first, and the download lookahead walks it too.
+    collect_begin = gc.index('    const auto Collect = [&] {')
+    collect_begin = gc.rindex('    };\n', 0, collect_begin) + len('    };\n')  # with 0012's comment
+    collect_end = gc.index('    Configure(false);', collect_begin)
+    collect_original = gc[collect_begin:collect_end]
+    for old, new in [
+        (cleanup_capture,
+         gc_setup + '\n    const auto Cleanup = [&, this]'),
+        (collect_original,
+         '    const auto Collect = [&] { ForEachCandidate(frame_tick - ticks_to_destroy, Cleanup); };\n'),
+        ('        if (must_download) {',
+         '        if (must_download && KeepLargeDirty(image)) {\n            return false;\n        }\n'
+         '        if (must_download && !TakePrefetched(image_id, image)) {'),
+        # Time the per-image drain Cleanup still takes for an image the prefetch could not batch.
+        # One GPU pipeline wait per eviction, against one wait for a whole batch in the batched path:
+        # this is the stall the prefetch exists to remove, so keep it visible.
+        ('            image.DownloadMemory(map, copies);\n            runtime.Finish();\n'
+         '            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);',
+         '            image.DownloadMemory(map, copies);\n'
+         '            {\n'
+         '                const ::Eden::Performance::Timer drain_timer(\n'
+         '                    ::Eden::Performance::gc_unbatched_drain, 1);\n'
+         '                runtime.Finish();\n'
+         '            }\n'
+         '            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);'),
+        ('(!high_priority_mode && must_download)) {', '(!DirtyEvictions() && must_download)) {'),
+        ('    Configure(false);', '    Configure(false);\n    PrefetchDownloads();'),
+        ('        Configure(true);', '        Configure(true);\n        PrefetchDownloads();'),
+        # The eviction budget counts visits, not evictions: skipped images (decoding,
+        # costly, or dirty images kept below the critical mark) burn it and stop the
+        # scan, so kept images shield everything behind them. Count evictions; bound
+        # the scan separately. gc_scan=upstream restores visit counting.
+        ('    size_t num_iterations = 0;',
+         '    size_t num_iterations = 0;\n    size_t num_scanned = 0;\n    constexpr size_t max_scanned = 8192;'),
+        ('        if (num_iterations == 0) {\n            return true;\n        }\n        --num_iterations;',
+         '        if (num_iterations == 0 || num_scanned >= max_scanned) {\n            return true;\n        }\n        ++num_scanned;\n'
+         '        if (::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }'),
+        # A costly image (ASTC kept as BC3, converted on the CPU) goes only past Eden's own critical
+        # mark, not when the console's pool alone is critical: rebuilding it decodes it again on the
+        # CPU, in memory the pool did not have (Mario Kart World: 1,561 evicted in one window, 3.4 GB
+        # of conversions and uploads in the next, and the decoder's allocation ended the session).
+        ('        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!DirtyEvictions() && must_download)) {',
+         '        const bool costly_kept = !(aggressive_mode && total_used_memory >= critical_memory) &&\n'
+         '                                 !::Eden::Performance::gc_old_costly && True(image.flags & ImageFlagBits::CostlyLoad);\n'
+         '        if (costly_kept || (!DirtyEvictions() && must_download)) {'),
+        ('            probe_costly_skips += !aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad);\n',
+         '            probe_costly_skips += costly_kept;\n'),
+        ('            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n',
+         '            probe_dirty_skips += !high_priority_mode && must_download;\n            return false;\n        }\n'
+         '        if (!::Eden::Performance::gc_count_visits.load(std::memory_order_relaxed)) {\n            --num_iterations;\n        }\n'),
+        # The aggressive pass gets its own scan allowance: Configure resets the
+        # eviction budget per pass, and the scan counter must reset with it, or a
+        # first pass spent on skips would stillborn the second one. Runs after the
+        # Configure(true) pair above, whose first line this matches.
+        ('        Configure(true);',
+         '        Configure(true);\n        num_scanned = 0;'),
+        # While the console's pool is short (performance.h, GraphicsMemoryIsShort) the collector
+        # works as if past its first mark, past both once the pool is critical (GraphicsMemoryIsCritical),
+        # and stays so for the whole run instead of easing off after one eviction under a mark the
+        # pool never reaches.
+        ('    u64 ticks_to_destroy = 0;\n',
+         '    u64 ticks_to_destroy = 0;\n    const bool memory_short = ::Eden::Performance::GraphicsMemoryIsShort();\n'),
+        ('        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n',
+         '        if (memory_short) {\n'
+         '            // Short but not critical, only what 600 frames left unused goes (EDEN_NX2_TC_SHORT_AGE):\n'
+         '            // at 60, and 10 whenever use passed the texture cache\'s own critical mark, a race\n'
+         '            // evicted and rebuilt 1,000-2,400 textures every 600 frames, many still in use, while\n'
+         '            // the pool stayed short throughout (an image freed inside a graphics block does not\n'
+         '            // give the pool a larger free block). On the console the pool decides: critical\n'
+         '            // (GraphicsMemoryIsCritical) collects as before.\n'
+         '            static const u64 short_age = [] {\n'
+         '                const char* value = std::getenv("EDEN_NX2_TC_SHORT_AGE");\n'
+         '                return value != nullptr ? std::strtoull(value, nullptr, 10) : 600ULL;\n'
+         '            }();\n'
+         '            high_priority_mode = true;\n'
+         '            aggressive_mode = allow_aggressive && ::Eden::Performance::GraphicsMemoryIsCritical();\n'
+         '            ticks_to_destroy = (std::max)(aggressive_mode ? u64{10} : short_age, min_age);\n'
+         '        }\n'
+         '        num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);\n'),
+        ('        if (aggressive_mode && total_used_memory < critical_memory) {',
+         '        if (aggressive_mode && !memory_short && total_used_memory < critical_memory) {'),
+        ('        } else if (high_priority_mode && total_used_memory < expected_memory) {',
+         '        } else if (high_priority_mode && !memory_short && total_used_memory < expected_memory) {'),
+        ('    if (total_used_memory >= critical_memory) {\n        Configure(true);',
+         '    if (total_used_memory >= critical_memory || memory_short) {\n        Configure(true);'),
+        # While the pool is short, costly images 300 frames unused (a course left behind) go too, in a
+        # pass of their own: kept whenever only the pool was short, Mario Kart World's next course took
+        # 1.2 GB of graphics memory within five seconds with nothing the collector could give back, and
+        # waiting until the pool was critical left a course load too little room (pro27: 1.37 GB usable,
+        # then out of memory within one window). On a light frame (a loading screen: astc_policy.h)
+        # the course left behind is unused after 10 frames already, and the next one is about to load.
+        ('        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n',
+         '        num_scanned = 0;\n        PrefetchDownloads();\n        Collect();\n    }\n'
+         '    const u64 old_age = ::Eden::AstcPolicy::InBackground() ? 300 : 10;\n'
+         '    if (memory_short && frame_tick > old_age) {\n'
+         '        Configure(true);\n'
+         '        num_scanned = 0;\n'
+         '        ::Eden::Performance::gc_old_costly = true;\n'
+         '        PrefetchDownloads();\n'
+         '        ForEachCandidate(frame_tick - old_age, Cleanup);\n'
+         '        ::Eden::Performance::gc_old_costly = false;\n'
+         '    }\n'),
+    ]:
+        if gc.count(old) != 1:
+            raise RuntimeError(f'Pinned GC anchor changed: {old}')
+        gc = gc.replace(old, new)
+except (ValueError, RuntimeError, AssertionError) as error:
+    if not lenient:
+        raise
+    # The collector and download batching edits need the old texture cache: keep upstream's.
+    skip('texture_cache.h GC/download batching', str(error))
+    download_prefix = gc_original = gc = '\x00skipped GC block\x00'
 texture_costs = []
 for signature, index in (
     ('RunGarbageCollector()', 13), ('DownloadMemory(DAddr cpu_addr, size_t size)', 14),
@@ -1792,6 +1809,9 @@ for expression, index, count in (
     ('BuildShader(device, code)', 23, 2),
 ):
     if shader_source.count(expression) != count:
+        if lenient:
+            skip('vk_pipeline_cache.cpp cost', expression)
+            continue
         raise RuntimeError(f'Shader cost anchor changed: {expression}')
     shader_source = shader_source.replace(expression,
         f'([&] {{ auto cost = Eden::Performance::VulkanTimer({index}); '
@@ -1802,6 +1822,9 @@ for statement in (
 ):
     expected = 2 if 'cfg_offset' in statement else 1  # graphics exception dump too
     if shader_source.count(statement) != expected:
+        if lenient:
+            skip('vk_pipeline_cache.cpp CFG', statement)
+            continue
         raise RuntimeError(f'Shader CFG anchor changed: {statement}')
     shader_source = shader_source.replace(statement,
         'auto cfg_cost = Eden::Performance::VulkanTimer(20);\n        ' + statement +
@@ -1822,6 +1845,9 @@ for old, new in shader_costs:
         trace = new[new.index('    if (::Eden::DevVulkan::trace_pipelines && pipeline)'):]
         new = ('    if (is_new) {\n        pipeline = CreateComputePipeline(key, shader);\n    }\n' + trace)
     if shader_source.count(old) != 1:
+        if lenient:
+            skip('vk_pipeline_cache.cpp', old)
+            continue
         raise RuntimeError(f'Shader pipeline anchor changed: {old[:60]}')
     shader_source = shader_source.replace(old, new)
 # The driver's pipeline cache file (vulkan_pipelines.bin). Eden rewrote it in place (the source
@@ -1951,6 +1977,9 @@ pipeline_cache_writes = [
 ]
 for old, new in pipeline_cache_writes:
     if shader_source.count(old) != 1:
+        if lenient:
+            skip('vk_pipeline_cache.cpp cache write', old)
+            continue
         raise RuntimeError(f'Pipeline cache write anchor changed: {old[:60]}')
     shader_source = shader_source.replace(old, new)
 shader_output = output / 'vk_pipeline_cache_cost.cpp'
@@ -2121,8 +2150,10 @@ for name, index, expected in (
     text = path.read_text() if name == 'vk_swapchain' else (source / relative).read_text()
     pattern = r'(?m)^( +)(scheduler\.(?:Wait|Finish)\([^\n]*\);)$'
     matches = list(re.finditer(pattern, text))
-    if len(matches) != expected:
+    if len(matches) != expected and not lenient:
         raise RuntimeError(f'Wait-site anchors changed: {name}: {len(matches)} != {expected}')
+    if len(matches) != expected:
+        skip(f'{name} wait sites', f'{len(matches)} != {expected} (all timed)')
     text = re.sub(pattern, lambda m: m[1] + '{ auto timer = Eden::Performance::VulkanTimer('
                   + str(index) + '); ' + m[2] + ' }', text)
     if name == 'vk_compute_pass':
@@ -2132,6 +2163,9 @@ for name, index, expected in (
                             'VulkanTimer(12); scheduler.Flush();')
     for probe_old, probe_new in probes.get(name, []):
         if text.count(probe_old) != 1:
+            if lenient:
+                skip(f'{name} probe', probe_old)
+                continue
             raise RuntimeError(f'Probe anchor changed: {name}: {probe_old[:60]}')
         text = text.replace(probe_old, probe_new)
     text = '#include "performance.h"\n' + text
@@ -2274,3 +2308,9 @@ if broken:
     for line in broken:
         print("  " + line, file=sys.stderr)
     sys.exit(1)
+if skipped:
+    print(f"EDEN_PORT_LENIENT: {len(skipped)} edit(s) skipped (anchors not in this Eden source):", file=sys.stderr)
+    for line in skipped:
+        print("  " + line, file=sys.stderr)
+    if os.environ.get('EDEN_PORT_SKIPPED'):
+        Path(os.environ['EDEN_PORT_SKIPPED']).write_text('\n'.join(skipped) + '\n')

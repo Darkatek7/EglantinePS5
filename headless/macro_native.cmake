@@ -3,7 +3,7 @@ file(READ "${PROJECT_SOURCE_DIR}/src/video_core/macro.h" macro_header)
 set(macro_member "    u64 native_code_generation{};")
 string(FIND "${macro_header}" "${macro_member}" macro_member_at)
 if(macro_member_at LESS 0)
-    message(FATAL_ERROR "Pinned MacroEngine code generation changed")
+    eden_pinned_failed("Pinned MacroEngine code generation changed")
 endif()
 string(REPLACE "${macro_member}"
     "${macro_member}\n    ::Eden::MacroNative::Matcher native_front_matches, native_back_matches;"
@@ -21,7 +21,7 @@ file(READ "${macro_input}" native_macro_source)
 set(native_macro_anchor "        // Reused between calls (a macro never calls another: methods >= 0xe00 are refused below);")
 string(FIND "${native_macro_source}" "${native_macro_anchor}" native_macro_at)
 if(native_macro_at LESS 0)
-    message(FATAL_ERROR "Pinned MacroEngine native dispatch changed")
+    eden_pinned_failed("Pinned MacroEngine native dispatch changed")
 endif()
 string(REPLACE "${native_macro_anchor}" [=[        ::Eden::MacroNative::Bench native_bench{native_back_matches, native_code, native_code_generation, method, "back"};
         if (::Eden::MacroNative::TryRun(native_back_matches, native_code, native_code_generation,
@@ -37,7 +37,7 @@ string(REPLACE "${native_macro_anchor}" [=[        ::Eden::MacroNative::Bench na
 set(native_emit "        const auto emit = [&](u32 address, u32 value) {")
 string(FIND "${native_macro_source}" "${native_emit}" native_emit_at)
 if(native_emit_at LESS 0)
-    message(FATAL_ERROR "Pinned native macro method callback changed")
+    eden_pinned_failed("Pinned native macro method callback changed")
 endif()
 string(REPLACE "${native_emit}" "${native_emit}\n                ::Eden::MacroNative::EmitBench emit_bench{native_bench};"
     native_macro_source "${native_macro_source}")
@@ -55,7 +55,7 @@ set(front_end "    fs.parameters.clear();")
 string(FIND "${native_maxwell}" "${front_begin}" front_begin_at)
 string(FIND "${native_maxwell}" "${front_end}" front_end_at)
 if(front_begin_at LESS 0 OR front_end_at LESS 0)
-    message(FATAL_ERROR "Pinned Maxwell3D front macro dispatch changed")
+    eden_pinned_failed("Pinned Maxwell3D front macro dispatch changed")
 endif()
 string(REPLACE "${front_begin}" [=[        ::Eden::MacroNative::Bench native_bench{engine.native_front_matches, engine.native_code, engine.native_code_generation, start, "front"};
         if (!::Eden::MacroNative::TryRun(engine.native_front_matches, engine.native_code,
@@ -67,7 +67,7 @@ string(REPLACE "${front_begin}" [=[        ::Eden::MacroNative::Bench native_ben
 set(front_emit "            [&](u32 address, u32 value) {\n")
 string(FIND "${native_maxwell}" "${front_emit}" front_emit_at)
 if(front_emit_at LESS 0)
-    message(FATAL_ERROR "Pinned front macro method callback changed")
+    eden_pinned_failed("Pinned front macro method callback changed")
 endif()
 string(REPLACE "${front_emit}" "${front_emit}                ::Eden::MacroNative::EmitBench emit_bench{native_bench};\n"
     native_maxwell "${native_maxwell}")

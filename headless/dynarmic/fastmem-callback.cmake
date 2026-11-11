@@ -14,7 +14,7 @@
 function(eden_fastmem_callback_require source anchor what)
     string(FIND "${source}" "${anchor}" at)
     if(at LESS 0)
-        message(FATAL_ERROR "Pinned fastmem callback changed (${what})")
+        eden_pinned_failed("Pinned fastmem callback changed (${what})")
     endif()
 endfunction()
 

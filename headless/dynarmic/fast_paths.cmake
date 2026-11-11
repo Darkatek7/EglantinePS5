@@ -24,7 +24,7 @@
 function(eden_fast_paths_require source anchor what)
     string(FIND "${source}" "${anchor}" at)
     if(at LESS 0)
-        message(FATAL_ERROR "Pinned JIT fast path changed (${what})")
+        eden_pinned_failed("Pinned JIT fast path changed (${what})")
     endif()
 endfunction()
 
