@@ -1,3 +1,7 @@
+#include <cstddef>
+#include <cstdint>
+#include "core/device_memory.h"
+namespace Common { void GuestMemoryFreed(std::uint64_t offset, std::size_t bytes) noexcept; void GuestMemoryFreedPart(std::uint64_t offset, std::size_t bytes) noexcept; inline constexpr std::size_t GuestFreedSlotBytes = std::size_t{2} << 20; }
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -142,9 +146,19 @@ KPhysicalAddress KPageHeap::AllocateByRandom(s32 index, size_t num_pages, size_t
 }
 
 void KPageHeap::FreeBlock(KPhysicalAddress block, s32 index) {
-    do {
-        block = m_blocks[index++].PushBlock(block);
-    } while (block != 0);
+    for (;;) {
+        const KPhysicalAddress merged = m_blocks[index].PushBlock(block);
+        if (merged == 0) {
+            if (const size_t size = m_blocks[index].GetSize(); size >= ::Common::GuestFreedSlotBytes) {
+                ::Common::GuestMemoryFreed(GetInteger(block) - Core::DramMemoryMap::Base, size);
+            } else {
+                ::Common::GuestMemoryFreedPart(GetInteger(block) - Core::DramMemoryMap::Base, size);
+            }
+            return;
+        }
+        block = merged;
+        ++index;
+    }
 }
 
 void KPageHeap::Free(KPhysicalAddress addr, size_t num_pages) {

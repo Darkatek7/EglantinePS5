@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include <array>
+#include <mutex>
 
 #include <atomic>
 #include <memory>
@@ -182,6 +184,8 @@ namespace Vulkan {
         const VkPhysicalDeviceMemoryProperties properties; ///< Physical device memory properties.
         VkDeviceSize buffer_image_granularity;            ///< Adjacent buffer/image granularity
         u32 valid_memory_types{~0u};
+        mutable std::mutex temporary_pool_mutex;
+        mutable std::array<VmaPool, VK_MAX_MEMORY_TYPES> temporary_pools{};
         mutable std::atomic<u32> pressure_events{0};
         mutable std::atomic<u32> failed_images{0};
         mutable std::mutex buffer_type_mutex;

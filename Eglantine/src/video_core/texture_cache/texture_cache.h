@@ -40,8 +40,15 @@
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
+#include "texture_partial.h"
+#include "astc_policy.h"
 #include "video_core/texture_cache/util.h"
 #include "video_core/textures/decoders.h"
+
+#include "performance.h"
+#include "image_pages.h"
+#include "common/scope_exit.h"
+namespace Vulkan { class TextureCacheRuntime; }
 
 namespace VideoCommon {
 
@@ -88,7 +95,8 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
         const s64 min_spacing_expected = device_local_memory - 1_GiB;
         const s64 min_spacing_critical = device_local_memory - 512_MiB;
         const s64 mem_threshold = (std::min)(device_local_memory, TARGET_THRESHOLD);
-        const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+        const s64 min_vacancy_expected =
+            ((std::is_same_v<Runtime, Vulkan::TextureCacheRuntime> ? 4 : 6) * mem_threshold) / 10;
         const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
         expected_memory = static_cast<u64>(
             (std::max)((std::min)(device_local_memory - min_vacancy_expected, min_spacing_expected),
@@ -633,6 +641,7 @@ void TextureCache<P>::TickFrame() {
     sentenced_image_bytes[sentenced_image_index] = 0;
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();
+    ::Eden::AstcPolicy::Frame();
     TickAsyncDecode();
     TickAsyncUnswizzle();
     if (frame_tick % 600 == 0 && !uploaded_ranges.empty()) {
@@ -1284,6 +1293,12 @@ bool TextureCache<P>::IsDownloadable(const ImageBase& image) const noexcept {
 
 template <class P>
 void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
+    std::optional<Eden::Performance::Timer> cost_timer;
+    if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {
+        if (Eden::Performance::vulkan_cost_enabled.load(std::memory_order_relaxed))
+            cost_timer.emplace(Eden::Performance::vulkan_api[14]);
+    }
+
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureCache};
     boost::container::small_vector<ImageId, 16> images;
     ForEachImageInRegion(cpu_addr, size, [this, &images](ImageId image_id, ImageBase& image) {
@@ -1935,6 +1950,12 @@ void TextureCache<P>::CommitAsyncFlushes() {
 
 template <class P>
 void TextureCache<P>::PopAsyncFlushes() {
+    std::optional<Eden::Performance::Timer> cost_timer;
+    if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {
+        if (Eden::Performance::vulkan_cost_enabled.load(std::memory_order_relaxed))
+            cost_timer.emplace(Eden::Performance::vulkan_api[15]);
+    }
+
     if (committed_downloads.empty()) {
         return;
     }
@@ -2195,7 +2216,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         runtime.TransitionImageLayout(image);
         return;
     }
-    if (True(image.flags & ImageFlagBits::AsynchronousDecode)) {
+    if (True(image.flags & ImageFlagBits::AsynchronousDecode) && ::Eden::AstcPolicy::InBackground()) {
         QueueAsyncDecode(image, image_id);
         return;
     }
@@ -2216,6 +2237,37 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
+    if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {
+        if (image.info.type == ImageType::e2D && image.info.resources.layers > 1 && image.guest_size_bytes >= LayerUploadMinSize && True(image.flags & ImageFlagBits::Converted) &&
+            False(image.flags & (ImageFlagBits::AcceleratedUpload | ImageFlagBits::Sparse |
+                                 ImageFlagBits::Remapped | ImageFlagBits::Unbacked |
+                                 ImageFlagBits::TrimmedLevels))) {
+            const s32 layers = image.info.resources.layers;
+            ImageInfo layer_info = image.info;
+            layer_info.resources.layers = 1;
+            const size_t layer_map = MapSizeBytes(image) / layers;
+            for (s32 layer = 0; layer < layers; ++layer) {
+                const GPUVAddr layer_addr = image.gpu_addr + u64(layer) * image.info.layer_stride;
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
+                    *gpu_memory, layer_addr, image.info.layer_stride, &swizzle_data_buffer);
+                unswizzle_data_buffer.resize_destructive((std::max<size_t>)(
+                    image.unswizzled_size_bytes / layers, CalculateUnswizzledSizeBytes(layer_info)));
+                auto copies = UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
+                                             unswizzle_data_buffer);
+                // The layer's converted size, where it is above the estimate (as the decode).
+                auto layout = copies;
+                ConvertedLayout(layer_info, layout);
+                const size_t layer_out = layout.empty() ? layer_map :
+                    (std::max<size_t>)(layer_map, layout.back().buffer_offset + layout.back().buffer_size);
+                auto layer_staging = runtime.UploadStagingBuffer(layer_out);
+                ConvertImage(unswizzle_data_buffer, layer_info, layer_staging.mapped_span, copies);
+                for (auto& copy : copies) copy.image_subresource.base_layer = layer;
+                image.UploadMemory(layer_staging, copies);
+            }
+            runtime.InsertUploadMemoryBarrier();
+            return;
+        }
+    }
     if (!UploadInChunks(image)) {
         auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
         UploadImageContents(image, staging);
@@ -2775,6 +2827,62 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     UNIMPLEMENTED_IF(False(image.flags & ImageFlagBits::Converted));
     LOG_DEBUG(HW_GPU, "Queuing async texture decode {:#x}", image.gpu_addr);
 
+    if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {
+        if (image.info.type == ImageType::e2D && image.info.resources.layers > 1 && image.guest_size_bytes >= LayerUploadMinSize) {
+            image.flags |= ImageFlagBits::IsDecoding;
+            const s32 layers = image.info.resources.layers;
+            ImageInfo layer_info = image.info;
+            layer_info.resources.layers = 1;
+            const size_t layer_out = MapSizeBytes(image) / layers;
+            // A layer's own sizes, not a share of the whole image's estimates: a decode that
+            // wrote past its buffer corrupted the heap (TextureDecoder "mutex lock failed").
+            const size_t layer_in = (std::max<size_t>)(image.unswizzled_size_bytes / layers,
+                                                       CalculateUnswizzledSizeBytes(layer_info));
+            const bool zero = False(image.flags & ImageFlagBits::ZeroFilled);
+            image.flags |= ImageFlagBits::ZeroFilled;
+            for (s32 layer = 0; layer < layers; ++layer) {
+                ++async_decodes_queued;
+                auto layer_decode = std::make_unique<AsyncDecodeContext>();
+                auto* layer_ptr = layer_decode.get();
+                layer_decode->image_id = image_id;
+                async_decodes.push_back(std::move(layer_decode));
+                const GPUVAddr layer_addr = image.gpu_addr + u64(layer) * image.info.layer_stride;
+                std::vector<u8> layer_input(layer_in, 0);
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> layer_swizzle(
+                    *gpu_memory, layer_addr, image.info.layer_stride, &swizzle_data_buffer);
+                auto layer_copies = UnswizzleImage(*gpu_memory, layer_addr, layer_info, layer_swizzle,
+                                                   layer_input);
+                auto zero_copies = layer_copies;
+                ConvertedLayout(layer_info, zero_copies);
+                const size_t out = zero_copies.empty() ? layer_out :
+                    (std::max<size_t>)(layer_out, zero_copies.back().buffer_offset + zero_copies.back().buffer_size);
+                if (out > layer_out) {
+                    static std::atomic<u32> reported{};
+                    if (reported.fetch_add(1) < 8) {
+                        LOG_WARNING(HW_GPU, "Layer decode at {:#x} needs {} bytes, {} estimated", layer_addr, out, layer_out);
+                    }
+                }
+                if (zero) {
+                    for (auto& copy : zero_copies) copy.image_subresource.base_layer = layer;
+                    auto zero_staging = runtime.UploadStagingBuffer(out);
+                    std::memset(zero_staging.mapped_span.data(), 0, out);
+                    image.UploadMemory(zero_staging, zero_copies);
+                }
+                auto layer_func = [layer_out = out, layer, copies = layer_copies, info = layer_info,
+                                   input = std::move(layer_input), async_decode = layer_ptr]() mutable {
+                    async_decode->decoded_data.resize_destructive(layer_out);
+                    std::span copies_span{copies.data(), copies.size()};
+                    ConvertImage(input, info, async_decode->decoded_data, copies_span);
+                    for (auto& copy : copies) copy.image_subresource.base_layer = layer;
+                    async_decode->copies = std::move(copies);
+                    async_decode->complete.store(true, std::memory_order_release);
+                };
+                texture_decode_worker.QueueWork(std::move(layer_func));
+            }
+            if (zero) runtime.InsertUploadMemoryBarrier();
+            return;
+        }
+    }
     image.flags |= ImageFlagBits::IsDecoding;
     ++async_decodes_queued;
     auto decode = std::make_unique<AsyncDecodeContext>();
@@ -2785,7 +2893,11 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     std::vector<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes, 0);
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(*gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data, local_unswizzle_data_buffer);
-    const size_t out_size = MapSizeBytes(image);
+    auto converted_layout = copies;
+    ConvertedLayout(image.info, converted_layout);
+    const size_t out_size = converted_layout.empty() ? MapSizeBytes(image) :
+        (std::max<size_t>)(MapSizeBytes(image), converted_layout.back().buffer_offset +
+                                                converted_layout.back().buffer_size);
     if (False(image.flags & ImageFlagBits::ZeroFilled)) {
         // Until the decode lands (a second or more while title 1 streams ~40 textures a second)
         // a new image showed whatever its memory last held, often other textures. Zero blocks
@@ -2806,10 +2918,8 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
         std::span copies_span{copies.data(), copies.size()};
         ConvertImage(input, info, async_decode->decoded_data, copies_span);
 
-        // TODO: Do we need this lock?
-        std::unique_lock lock{async_decode->mutex};
         async_decode->copies = std::move(copies);
-        async_decode->complete = true;
+        async_decode->complete.store(true, std::memory_order_release);
     };
     texture_decode_worker.QueueWork(std::move(func));
 }
@@ -2835,14 +2945,11 @@ void TextureCache<P>::TickAsyncDecode() {
     auto i = async_decodes.begin();
     while (i != async_decodes.end()) {
         auto* async_decode = i->get();
-        {
-            // Release the lock before the context is erased below: unlocking it afterwards wrote
-            // into freed memory (heap corruption, crashes minutes into title 1).
-            std::unique_lock lock{async_decode->mutex};
-            if (!async_decode->complete) {
-                ++i;
-                continue;
-            }
+        // After this the context is the GPU thread's alone: the decode thread's store was
+        // its last touch of it.
+        if (!async_decode->complete.load(std::memory_order_acquire)) {
+            ++i;
+            continue;
         }
         if (async_decode->cancelled) {
             i = async_decodes.erase(i);
@@ -2855,11 +2962,15 @@ void TextureCache<P>::TickAsyncDecode() {
             i = async_decodes.erase(i);
             continue;
         }
-        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+        auto staging = runtime.UploadStagingBuffer(async_decode->decoded_data.size());
         std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, async_decode->copies);
-        image.flags &= ~ImageFlagBits::IsDecoding;
+        if (std::none_of(async_decodes.begin(), async_decodes.end(), [&](const auto& other) {
+                return other.get() != async_decode && other->image_id == async_decode->image_id &&
+                       !other->cancelled;
+            }))
+            image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
         i = async_decodes.erase(i);
     }
@@ -3849,6 +3960,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
         (*channel_state->gpu_page_table)[page].push_back(image_id);
     });
     if (False(image.flags & ImageFlagBits::Sparse)) {
+        ::Eden::ImagePages::Mark(image.cpu_addr, image.guest_size_bytes);
         auto map_id =
             slot_map_views.insert(image.gpu_addr, image.cpu_addr, image.guest_size_bytes, image_id);
         page_filter.Mark(image.cpu_addr, image.guest_size_bytes);
@@ -3860,6 +3972,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
     boost::container::small_vector<ImageViewId, 16> sparse_maps;
     ForEachSparseSegment(
         image, [this, image_id, &sparse_maps](GPUVAddr gpu_addr, DAddr cpu_addr, size_t size) {
+            ::Eden::ImagePages::Mark(cpu_addr, size);
             auto map_id = slot_map_views.insert(gpu_addr, cpu_addr, size, image_id);
             page_filter.Mark(cpu_addr, size);
             ForEachCPUPage(cpu_addr, size,

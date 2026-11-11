@@ -1,3 +1,4 @@
+#include "headless/macro_matcher.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -261,6 +262,7 @@ struct MacroEngine {
     std::vector<u32> native_fifo;
     // Calls replayed instead of interpreted (macro_memo.h), and what the current call wrote.
     u64 native_code_generation{};
+    ::Eden::MacroNative::Matcher native_front_matches, native_back_matches;
     BasicMacroMemo<::Common::unordered_map<u64, u32, MacroMemoHash>> native_memo;
     /// The macro code compiled to x86-64 (EDEN_NX2_MME_JIT=0 turns it off), created on first use.
     std::shared_ptr<TuringMacroJit> native_jit;

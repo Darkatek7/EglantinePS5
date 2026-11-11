@@ -1,3 +1,8 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include <chrono>
+#include <cstdio>
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -127,14 +132,36 @@ void GenerateRandom(std::span<u64> out_random) {
 } // namespace
 
 void KProcess::Finalize(KernelCore& kernel) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    auto eden_last = std::chrono::steady_clock::now();
+    const auto eden_mark = [&eden_last](const char* step) {
+        const auto now = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(now - eden_last).count();
+        if (ms >= 20.0) std::fprintf(stderr, "EDEN_SHUTDOWN_PROCESS step=%s ms=%.1f\n", step, ms);
+        eden_last = std::chrono::steady_clock::now();
+    };
+#else // PS5
+#endif // PS5
     // Delete the process local region.
     this->DeleteThreadLocalRegion(kernel, m_plr_address);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("local_region");
+#else // PS5
+#endif // PS5
 
     // Get the used memory size.
     const size_t used_memory_size = this->GetUsedNonSystemUserPhysicalMemorySize(kernel);
 
     // Finalize the page table.
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("used_memory_size");
+#else // PS5
+#endif // PS5
     m_page_table.Finalize();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("page_table");
+#else // PS5
+#endif // PS5
 
     // Finish using our system resource.
     if (m_system_resource) {
@@ -147,6 +174,10 @@ void KProcess::Finalize(KernelCore& kernel) {
         m_system_resource = nullptr;
     }
 
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("system_resource");
+#else // PS5
+#endif // PS5
     // Free all shared memory infos.
     {
         auto it = m_shared_memory_list.begin();
@@ -164,6 +195,10 @@ void KProcess::Finalize(KernelCore& kernel) {
         }
     }
 
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("shared_memory");
+#else // PS5
+#endif // PS5
     // Our thread local page list must be empty at this point.
     ASSERT(m_partially_used_tlp_tree.empty());
     ASSERT(m_fully_used_tlp_tree.empty());
@@ -175,11 +210,23 @@ void KProcess::Finalize(KernelCore& kernel) {
         m_resource_limit->Close(kernel);
     }
 
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("resource_limit");
+#else // PS5
+#endif // PS5
     // Clear expensive resources, as the destructor is not called for guest objects.
     for (auto& interface : m_arm_interfaces) {
         interface.reset();
     }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("arm_interfaces");
+#else // PS5
+#endif // PS5
     m_exclusive_monitor.reset();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    eden_mark("exclusive_monitor");
+#else // PS5
+#endif // PS5
 
     // Perform inherited finalization.
     KSynchronizationObject::Finalize(kernel);

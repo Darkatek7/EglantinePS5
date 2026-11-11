@@ -1,3 +1,10 @@
+#if !defined(__PROSPERO__) // not PS5
+#elif defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#include <glad/glad.h>
+#else // PS5
+#include <glad/glad.h>
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -73,14 +80,18 @@ DeferGpuQueue::~DeferGpuQueue() {
 struct GPU::Impl {
     explicit Impl(Core::System& system_, bool is_async_, bool use_nvdec_)
         : system{system_}
-        , gpu_thread{system_}
         , use_nvdec{use_nvdec_}
         , shader_notify()
         , is_async{is_async_}
+        , gpu_thread{system_}
     {}
 
     ~Impl() {
         NotifyShutdown();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        if (renderer && Settings::IsOpenGL()) { renderer->Context().MakeCurrent(); glFinish(); }
+#endif // PS5
         // Rasterizer teardown flushes commands and invalidates the bound engine's dirty flags.
         // Keep channels, their scheduler references, and the graphics context alive until then.
         renderer.reset();
@@ -196,6 +207,10 @@ struct GPU::Impl {
     template <typename Func>
     [[nodiscard]] u64 RequestSyncOperation(Func&& action) {
         std::unique_lock lck{sync_request_mutex};
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        if (sync_requests_stopped) return CurrentSyncRequestFence();
+#endif // PS5
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
         return fence;
@@ -463,9 +478,6 @@ struct GPU::Impl {
 
     Core::System& system;
 
-    // Destruction of thread must be done before all (non trivial)
-    // previous members has been destroyed
-    VideoCommon::GPUThread::ThreadManager gpu_thread;
 
     std::unique_ptr<VideoCore::RendererBase> renderer;
     const bool use_nvdec;
@@ -512,14 +524,23 @@ struct GPU::Impl {
     std::deque<size_t> free_swap_counters;
     std::deque<size_t> request_swap_counters;
     std::mutex request_swap_mutex;
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    bool sync_requests_stopped{}; // Protected by sync_request_mutex.
+#endif // PS5
     u64 pending_composite_fence{};
+    VideoCommon::GPUThread::ThreadManager gpu_thread;
 };
 
 GPU::GPU(Core::System& system, bool is_async, bool use_nvdec)
     : impl{std::make_unique<Impl>(system, is_async, use_nvdec)}
 {}
 
+#if !defined(__PROSPERO__) // not PS5
 GPU::~GPU() = default;
+#else // PS5
+GPU::~GPU() { impl->NotifyShutdown(); }
+#endif // PS5
 
 std::shared_ptr<Control::ChannelState> GPU::AllocateChannel() {
     return impl->AllocateChannel();
@@ -696,6 +717,16 @@ void GPU::ReleaseContext() {
 }
 
 void GPU::PushGPUEntries(s32 channel, Tegra::CommandList&& entries) {
+#if !defined(__PROSPERO__) // not PS5
+#elif defined(EDEN_DEV_PROFILE) // PS5 development build
+    static std::atomic<unsigned> submissions{};
+    const auto count = ++submissions;
+    if (count <= 3 || ::Eden::Performance::BootTrace()) LOG_INFO(Render_OpenGL, "EDEN_GUEST_GPU_SUBMIT count={} channel={} entries={}", count, channel, entries.command_lists.size());
+#else // PS5
+    static std::atomic<unsigned> submissions{};
+    const auto count = ++submissions;
+    if (count <= 3) LOG_INFO(Render_OpenGL, "EDEN_GUEST_GPU_SUBMIT count={} channel={}", count, channel);
+#endif // PS5
     impl->PushGPUEntries(channel, std::move(entries));
 }
 

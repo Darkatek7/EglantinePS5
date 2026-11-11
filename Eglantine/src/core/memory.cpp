@@ -1,3 +1,9 @@
+#if !defined(EDEN_A32_FASTMEM) // PS5 without the A32 fastmem window
+#else // PS5
+#include "src/fastmem.h"
+#endif // PS5
+#include "src/fastmem.h"
+#include "headless/performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -60,7 +66,11 @@ struct Memory::Impl {
     void SetCurrentPageTable(Kernel::KProcess& process) {
         current_page_table = &process.GetPageTable().GetImpl();
 
+#if !defined(EDEN_A32_FASTMEM) // PS5 without the A32 fastmem window
         if (process.IsApplication() && Settings::IsFastmemEnabled()) {
+#else // PS5
+        if (process.IsApplication() && (!process.Is64Bit() || ::Eden::Fastmem::RequestedA64()) && Settings::IsFastmemEnabled()) {
+#endif // PS5
             current_page_table->fastmem_arena = system.DeviceMemory().buffer.VirtualBasePointer();
         } else {
             current_page_table->fastmem_arena = nullptr;
@@ -693,6 +703,8 @@ struct Memory::Impl {
             ASSERT_MSG(type != Common::PageType::Memory,
                        "Mapping memory page without a pointer @ {:016x}", base * YUZU_PAGESIZE);
 
+            if (const auto mirror = page_table.entries.mirror_index; mirror != 0)
+                page_table.entries.ZeroRegion(base + mirror, end + mirror);
             page_table.entries.ZeroRegion(base, end);
         } else {
             u64 mapping_id = block_count.load(std::memory_order_relaxed);

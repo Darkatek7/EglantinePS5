@@ -1,3 +1,4 @@
+#include "headless/performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -444,14 +445,13 @@ namespace Kernel {
             }
         }
 
-        // Acquire the scheduler lock.
-        KScopedSchedulerLock sl{kernel};
+        {
+            KScopedSchedulerLock sl{kernel};
+            m_signaled = true;
+            KSynchronizationObject::NotifyAvailable(kernel);
+        }
 
-        // Signal.
-        m_signaled = true;
-        KSynchronizationObject::NotifyAvailable(kernel);
-
-        // Close the thread.
+        // Finalization may block; scheduling must be enabled here.
         this->Close(kernel);
     }
 
@@ -1406,6 +1406,10 @@ namespace Kernel {
 
         // Set our wait queue.
         m_wait_queue = queue;
+
+        // No name lookup here: this runs under the scheduler lock, and a thread's name lives in
+        // guest memory. Every thread that matters sends requests, so the IPC path names it.
+        ::Eden::Performance::WaitBegin(GetThreadId(), ::Eden::Performance::NowNs());
     }
 
     void KThread::NotifyAvailable(KernelCore& kernel, KSynchronizationObject* signaled_object, Result wait_result) {
@@ -1443,9 +1447,25 @@ namespace Kernel {
 
     void KThread::SetState(KernelCore& kernel, ThreadState state) {
         KScopedSchedulerLock sl{kernel};
+        // Close any wait this thread was under. SetState is the only place the reason is cleared,
+        // so reading it here attributes the wait to the reason it ran under (performance.h).
+        if (const auto wait_reason = this->GetWaitReasonForDebugging();
+            wait_reason != ThreadWaitReasonForDebugging::None) {
+            const auto* waker = GetCurrentThreadPointer(kernel);
+            ::Eden::Performance::WaitEnd(GetThreadId(), static_cast<unsigned>(wait_reason),
+                                         ::Eden::Performance::NowNs(),
+                                         waker ? waker->GetThreadId() : 0);
+        }
         // Clear debugging state
         this->SetWaitReasonForDebugging({});
         const ThreadState old_state = m_thread_state.load(std::memory_order_relaxed);
+        // Only the transition into Runnable is stamped: a thread already running that gets
+        // re-marked Runnable must not report its own remaining execution as time spent waiting to
+        // be scheduled (performance.h).
+        if ((old_state & ThreadState::Mask) != ThreadState::Runnable &&
+            (state & ThreadState::Mask) == ThreadState::Runnable) {
+            ::Eden::Performance::NoteRunnable(GetThreadId(), ::Eden::Performance::NowNs());
+        }
         m_thread_state.store(
             static_cast<ThreadState>((old_state & ~ThreadState::Mask) | (state & ThreadState::Mask)),
             std::memory_order_relaxed);

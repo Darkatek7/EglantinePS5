@@ -1,3 +1,5 @@
+#include "core/core.h"
+#include <utility>
 // SPDX-FileCopyrightText: 2022 yuzu Emulator Project
 // SPDX-FileCopyrightText: 2022 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -67,6 +69,7 @@ SessionId Container::OpenSession(Kernel::KProcess* process) {
         impl->sessions.emplace_back(SessionId{new_id}, process, asid);
     }
     auto& session = impl->sessions[new_id];
+    process->Open(impl->host1x.System().Kernel()); // Paired with the final CloseSession after SMMU unregistration.
     session.is_active = true;
     session.ref_count = 1;
     // Optimization
@@ -116,7 +119,7 @@ SessionId Container::OpenSession(Kernel::KProcess* process) {
 }
 
 void Container::CloseSession(SessionId session_id) {
-    std::scoped_lock lk(impl->session_guard);
+    std::unique_lock lk(impl->session_guard);
     auto& session = impl->sessions[session_id.id];
     if (--session.ref_count > 0) {
         return;
@@ -134,6 +137,9 @@ void Container::CloseSession(SessionId session_id) {
     Devices::Nx2GpuMemoryRegistry::Get().ForgetDeviceRanges(session.asid.id);
     smmu.UnregisterProcess(impl->sessions[session_id.id].asid);
     impl->id_pool.emplace_front(session_id.id);
+    auto* process = std::exchange(session.process, nullptr);
+    lk.unlock(); // Process finalization may close other services.
+    process->Close(impl->host1x.System().Kernel());
 }
 
 Session* Container::GetSession(SessionId session_id) {

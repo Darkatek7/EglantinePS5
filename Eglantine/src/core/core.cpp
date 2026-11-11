@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/diagnostics.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -8,7 +12,7 @@
 #include <new>
 #include <utility>
 
-#include "game_settings.h"
+#include "core/game_settings.h"
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
@@ -21,7 +25,7 @@
 #include "core/arm/exclusive_monitor.h"
 #include "core/core.h"
 
-#include "launch_timestamp_cache.h"
+#include "core/launch_timestamp_cache.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/debugger/debugger.h"
@@ -194,8 +198,6 @@ struct System::Impl {
         : kernel{system}, fs_controller{system}, hid_core{kernel}, cpu_manager{system},
           reporter{system}, applet_manager{system}, frontend_applets{system}, profile_manager{} {}
 
-    u64 program_id;
-
     bool Initialize(System& system) {
         try {
             device_memory.emplace();
@@ -323,6 +325,10 @@ struct System::Impl {
 
         core_timing.SyncPause(true);
         kernel.SuspendEmulation(true);
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.SuspendEmulation(true)");
+#endif // PS5
         is_paused.store(true, std::memory_order_relaxed);
     }
 
@@ -333,6 +339,10 @@ struct System::Impl {
     std::unique_lock<std::mutex> StallApplication() {
         std::unique_lock<std::mutex> lk(suspend_guard);
         kernel.SuspendEmulation(true);
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.SuspendEmulation(true)");
+#endif // PS5
         core_timing.SyncPause(true);
         return lk;
     }
@@ -454,6 +464,7 @@ struct System::Impl {
         auto process = Service::AM::CreateApplicationProcess(control, app_loader, load_result, system, file, params.program_id, params.program_index);
         if (load_result != Loader::ResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
+            process.reset();
             ShutdownMainProcess();
             return SystemResultStatus(u32(SystemResultStatus::ErrorLoader) + u32(load_result));
         }
@@ -462,6 +473,7 @@ struct System::Impl {
             LOG_CRITICAL(Core, "Failed to obtain loader for {}!", filepath);
             // The kernel is already initialized. Left running, it is destroyed with the global
             // System after main() returns, when device memory is already gone, and exit crashes.
+            process.reset();
             ShutdownMainProcess();
             return SystemResultStatus::ErrorGetLoader;
         }
@@ -490,6 +502,7 @@ struct System::Impl {
         SystemResultStatus init_result{SetupForApplicationProcess(system, emu_window)};
         if (init_result != SystemResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to initialize system (Error {})!", int(init_result));
+            process.reset();
             ShutdownMainProcess();
             return init_result;
         }
@@ -523,11 +536,7 @@ struct System::Impl {
         auto const metadata = pm.GetControlMetadata();
         std::string title_version = metadata.first != nullptr ? metadata.first->GetVersionString() : "";
 
-        if (app_loader->ReadProgramId(program_id) != Loader::ResultStatus::Success) {
-            LOG_ERROR(Core, "Failed to find program id for ROM");
-        }
-
-        GameSettings::LoadOverrides(program_id, gpu_core->Renderer());
+        GameSettings::LoadOverrides(params.program_id, gpu_core->Renderer());
         if (auto room_member = Network::GetRoomMember().lock()) {
             Network::GameInfo game_info;
             game_info.name = name;
@@ -553,14 +562,40 @@ struct System::Impl {
         exit_requested = false;
         if (gpu_core)
             gpu_core->NotifyShutdown();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed gpu_core->NotifyShutdown()");
+#endif // PS5
 
+        if (audio_core) audio_core->Shutdown();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed if (audio_core) audio_core->Shutdown()");
+#endif // PS5
         stop_event.request_stop();
         core_timing.SyncPause(false);
         Network::CancelPendingSocketOperations();
         kernel.SuspendEmulation(true);
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.SuspendEmulation(true)");
+#endif // PS5
+        cheat_engine.reset();
         kernel.CloseServices();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.CloseServices()");
+#endif // PS5
         kernel.ShutdownCores();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.ShutdownCores()");
+#endif // PS5
         services.reset();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed services.reset()");
+#endif // PS5
         service_manager.reset();
         fs_controller.Reset();
         cheat_engine.reset();
@@ -568,11 +603,23 @@ struct System::Impl {
         app_loader.reset();
         audio_core.reset();
         gpu_core.reset();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed gpu_core.reset()");
+#endif // PS5
         host1x_core.reset();
         perf_stats.reset();
         cpu_manager.Shutdown();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed cpu_manager.Shutdown()");
+#endif // PS5
         debugger.reset();
         kernel.Shutdown();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        ::Eden::ReportStep("shutdown", "Completed kernel.Shutdown()");
+#endif // PS5
         stop_event = {};
         Network::RestartSocketOperations();
 
@@ -607,6 +654,7 @@ struct System::Impl {
     }
 
     Timing::CoreTiming core_timing;
+    std::optional<Core::DeviceMemory> device_memory;
     Kernel::KernelCore kernel;
     /// RealVfsFilesystem instance
     FileSys::VirtualFilesystem virtual_filesystem;
@@ -635,7 +683,6 @@ struct System::Impl {
     std::optional<Service::Event> general_channel_event;
     std::optional<Core::PerfStats> perf_stats;
     std::optional<Tegra::Host1x::Host1x> host1x_core;
-    std::optional<Core::DeviceMemory> device_memory;
     std::optional<AudioCore::AudioCore> audio_core;
     std::optional<Memory::CheatEngine> cheat_engine;
     std::optional<Tools::Freezer> memory_freezer;

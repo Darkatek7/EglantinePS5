@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "performance.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -690,6 +691,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
             } else {
                 RunBuild();
             }
+            auto timer = Eden::Performance::VulkanTimer(16);
             std::unique_lock lock{build_mutex};
             build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
         });

@@ -2,6 +2,12 @@
 """Exercise the actual GPU timestamp probe with observable Vulkan operations."""
 from pathlib import Path
 import subprocess,tempfile
+from eglantine_source import source as eglantine_source  # the core, part of this repository
+def probe_section():
+    """The scheduler's GPU-time probe: its first anonymous namespace (Eglantine/'s vk_scheduler.cpp)."""
+    text = eglantine_source('src/video_core/renderer_vulkan/vk_scheduler.cpp')
+    start = text.index('namespace {\n// GPU execution time:')
+    return text[start:text.index('\n} // namespace\n', start) + len('\n} // namespace\n')]
 root=Path(__file__).resolve().parents[1]
 code=r'''
 #include <algorithm>
@@ -56,7 +62,7 @@ struct Device {
  const Physical& GetPhysical()const{return physical;}
  unsigned GetGraphicsFamily()const{return 0;}
 };
-'''+f'\n#include "{root}/headless/hud_gpu_time.h"\n#include "{root}/headless/submission_origin.h"\n'+(root/'headless/gpu_time_probe.inc').read_text()+r'''
+'''+f'\n#include "{root}/headless/hud_gpu_time.h"\n#include "{root}/headless/submission_origin.h"\n'+probe_section()+r'''
 int main(){Device d;vk::CommandBuffer cmd;
  Eden::DevVulkan::gpu_time=true;
  auto caller=reinterpret_cast<const void*>(uintptr_t(0x1234));

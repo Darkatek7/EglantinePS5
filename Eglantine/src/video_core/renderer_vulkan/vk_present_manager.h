@@ -9,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <exception>
 #include <boost/container/deque.hpp>
 
 #include "common/common_types.h"
@@ -102,6 +103,7 @@ private:
     std::mutex swapchain_mutex;
     std::mutex queue_mutex;
     std::mutex free_mutex;
+    std::exception_ptr present_failure;
     std::jthread present_thread;
     bool blit_supported;
     bool storage_supported;

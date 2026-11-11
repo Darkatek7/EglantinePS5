@@ -1,3 +1,17 @@
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <set>
+#include <utility>
+#include "dynarmic/frontend/A32/a32_location_descriptor.h"
+#include "dynarmic/frontend/A64/a64_location_descriptor.h"
+#include "dynarmic/interface/A32/a32.h"
+#include "dynarmic/interface/A64/a64.h"
+#define EDEN_EXCLUSIVE_ADDRESS(reg) code.mov(reg, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)))
+#define EDEN_EXCLUSIVE_VALUE(reg) code.mov(reg, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)))
+#define EDEN_CONF_ARG() code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf))
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 

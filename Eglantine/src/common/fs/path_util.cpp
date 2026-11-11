@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/storage_paths.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -115,6 +119,7 @@ public:
     void Reinitialize(fs::path eden_path = {}) {
         fs::path eden_path_cache;
         fs::path eden_path_config;
+#if !defined(__PROSPERO__) // not PS5
 #ifdef _WIN32
         // User directory takes priority over global %AppData% directory
         eden_path = GetExeDirectory() / PORTABLE_DIR;
@@ -159,6 +164,56 @@ public:
         LEGACY_PATH(LegacyEden, EDEN_LEGACY)
 #undef LEGACY_PATH
 #endif
+#else // PS5
+#ifdef _WIN32
+        // User directory takes priority over global %AppData% directory
+        eden_path = GetExeDirectory() / PORTABLE_DIR;
+        portable = IsDir(eden_path);
+        if (!Exists(eden_path) || !IsDir(eden_path)) {
+            eden_path = GetAppDataRoamingDirectory() / EDEN_DIR;
+        }
+        eden_path_cache = eden_path / CACHE_DIR;
+        eden_path_config = eden_path / CONFIG_DIR;
+#define LEGACY_PATH(titleName, upperName) GenerateLegacyPath(EmuPath::titleName##Dir, GetAppDataRoamingDirectory() / upperName##_DIR); \
+        GenerateLegacyPath(EmuPath::titleName##ConfigDir, GetAppDataRoamingDirectory() / upperName##_DIR / CONFIG_DIR); \
+        GenerateLegacyPath(EmuPath::titleName##CacheDir, GetAppDataRoamingDirectory() / upperName##_DIR / CACHE_DIR);
+        LEGACY_PATH(Citron, CITRON)
+        LEGACY_PATH(Sudachi, SUDACHI)
+        LEGACY_PATH(Yuzu, YUZU)
+        LEGACY_PATH(Suyu, SUYU)
+        LEGACY_PATH(LegacyEden, EDEN_LEGACY)
+#undef LEGACY_PATH
+#elif __ANDROID__
+        portable = true;
+        ASSERT(!eden_path.empty());
+        eden_path_cache = eden_path / CACHE_DIR;
+        eden_path_config = eden_path / CONFIG_DIR;
+#elif defined(PS5_NATIVE)
+        eden_path = Eden::UserDir();
+        eden_path_cache = eden_path / CACHE_DIR;
+        eden_path_config = eden_path / CONFIG_DIR;
+#else
+        eden_path = GetCurrentDir() / PORTABLE_DIR;
+        portable = IsDir(eden_path);
+        if (!Exists(eden_path) || !IsDir(eden_path)) {
+            eden_path = GetDataDirectory("XDG_DATA_HOME") / EDEN_DIR;
+            eden_path_cache = GetDataDirectory("XDG_CACHE_HOME") / EDEN_DIR;
+            eden_path_config = GetDataDirectory("XDG_CONFIG_HOME") / EDEN_DIR;
+        } else {
+            eden_path_cache = eden_path / CACHE_DIR;
+            eden_path_config = eden_path / CONFIG_DIR;
+        }
+#define LEGACY_PATH(titleName, upperName) GenerateLegacyPath(EmuPath::titleName##Dir, GetDataDirectory("XDG_DATA_HOME") / upperName##_DIR); \
+        GenerateLegacyPath(EmuPath::titleName##ConfigDir, GetDataDirectory("XDG_CONFIG_HOME") / upperName##_DIR); \
+        GenerateLegacyPath(EmuPath::titleName##CacheDir, GetDataDirectory("XDG_CACHE_HOME") / upperName##_DIR);
+        LEGACY_PATH(Citron, CITRON)
+        LEGACY_PATH(Sudachi, SUDACHI)
+        LEGACY_PATH(Yuzu, YUZU)
+        LEGACY_PATH(Suyu, SUYU)
+        LEGACY_PATH(LegacyEden, EDEN_LEGACY)
+#undef LEGACY_PATH
+#endif
+#endif // PS5
         // data
         GenerateEdenPath(EdenPath::EdenDir, eden_path);
         GenerateEdenPath(EdenPath::AmiiboDir, eden_path / AMIIBO_DIR);
@@ -184,6 +239,7 @@ public:
         // cache
         GenerateEdenPath(EdenPath::CacheDir, eden_path_cache);
         GenerateEdenPath(EdenPath::ShaderDir, eden_path_cache / SHADER_DIR);
+#if !defined(__PROSPERO__) // not PS5
 #ifdef _WIN32
         GenerateLegacyPath(EmuPath::RyujinxDir, GetAppDataRoamingDirectory() / RYUJINX_DIR);
 #else
@@ -191,6 +247,17 @@ public:
         // This is incredibly stupid and violates a million XDG standards, but whatever
         GenerateLegacyPath(EmuPath::RyujinxDir, GetDataDirectory("XDG_CONFIG_HOME") / RYUJINX_DIR);
 #endif
+#else // PS5
+#ifdef _WIN32
+        GenerateLegacyPath(EmuPath::RyujinxDir, GetAppDataRoamingDirectory() / RYUJINX_DIR);
+#elif defined(PS5_NATIVE)
+        GenerateLegacyPath(EmuPath::RyujinxDir, eden_path / RYUJINX_DIR);
+#else
+        // In Ryujinx's infinite wisdom, it places EVERYTHING in the config directory on UNIX
+        // This is incredibly stupid and violates a million XDG standards, but whatever
+        GenerateLegacyPath(EmuPath::RyujinxDir, GetDataDirectory("XDG_CONFIG_HOME") / RYUJINX_DIR);
+#endif
+#endif // PS5
 
     }
 

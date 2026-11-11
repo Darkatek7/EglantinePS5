@@ -38,12 +38,13 @@ static std::optional<ReturnType> Decode(V& visitor, u32 instruction) noexcept {
     };
     alignas(64) static const std::array<std::vector<Handler>, 0x1000> table = [&] {
         std::array<std::vector<Handler>, 0x1000> t{};
-        for (size_t i = 0; i < t.size(); ++i) {
+        std::vector<Handler> all;
+        {
 #define INST(fn, name, bitstring) \
     do { \
         auto const [mask, expect] = DYNARMIC_DECODER_GET_MATCHER(Matcher, fn, name, Decoder::detail::StringToArray<32>(bitstring)); \
-        if ((i & make_fast_index(mask)) == make_fast_index(expect)) { \
-            t[i].emplace_back([](V& visitor, u32 instruction) -> bool { \
+        { \
+            all.emplace_back([](V& visitor, u32 instruction) -> bool { \
                 return DYNARMIC_DECODER_GET_MATCHER_FUNCTION(Matcher, fn, name, Decoder::detail::StringToArray<32>(bitstring)); \
             }, mask, expect); \
         } \
@@ -51,6 +52,10 @@ static std::optional<ReturnType> Decode(V& visitor, u32 instruction) noexcept {
 #include "./a64.inc"
 #undef INST
         }
+        for (size_t i = 0; i < t.size(); ++i)
+            for (auto const& e : all)
+                if ((i & make_fast_index(e.mask)) == make_fast_index(e.expect))
+                    t[i].push_back(e);
         return t;
     }();
     for (auto const& e : table[make_fast_index(instruction)])

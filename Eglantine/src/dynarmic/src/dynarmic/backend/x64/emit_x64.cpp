@@ -349,7 +349,11 @@ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
 }
 
 EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& descriptor, CodePtr entrypoint, size_t size) {
+#if !defined(__PROSPERO__) // not PS5
     PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+#else // PS5
+
+#endif // PS5
     Patch(descriptor, entrypoint);
 
     BlockDescriptor block_desc{entrypoint, size};

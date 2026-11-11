@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstring>
+#include "network/network.h"
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -13,7 +15,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <iphlpapi.h>
-#elif defined(__linux__) || defined(__ANDROID__)
+#elif defined(__linux__) || defined(__ANDROID__) || defined(__FreeBSD__)
 #include <cerrno>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -104,7 +106,7 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
 #else
 
 std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
-#if defined(__ANDROID__) || defined(__linux__)
+#if defined(__ANDROID__) || defined(__linux__) || defined(__FreeBSD__)
     struct ifaddrs* ifaddr = nullptr;
     if (getifaddrs(&ifaddr) != 0) {
         LOG_ERROR(Network, "getifaddrs: {}", std::strerror(errno));
@@ -119,7 +121,7 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
         u32 flags;
     };
     std::vector<RoutingEntry> routes{};
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__FreeBSD__)
     // Even through Linux based, we can't reliably obtain routing information from there :(
 #else
     if (std::ifstream file("/proc/net/route"); file.is_open()) {
@@ -221,6 +223,17 @@ std::vector<Network::NetworkInterface> GetAvailableNetworkInterfaces() {
 #endif // _WIN32
 
 std::optional<Network::NetworkInterface> GetSelectedNetworkInterface() {
+    // Room addresses belong to the virtual /16, independent of host adapter discovery.
+    if (auto member = GetRoomMember().lock(); member && member->IsConnected()) {
+        NetworkInterface iface{};
+        iface.name = "Eden room";
+        iface.kind = HostAdapterKind::Wifi;
+        const auto ip = member->GetFakeIpAddress();
+        const IPv4Address mask{255, 255, 0, 0};
+        std::memcpy(&iface.ip_address, ip.data(), ip.size());
+        std::memcpy(&iface.subnet_mask, mask.data(), mask.size());
+        return iface;
+    }
     auto const& sel_if = Settings::values.network_interface.GetValue();
     if (auto const ifaces = Network::GetAvailableNetworkInterfaces(); ifaces.size() > 0) {
         if (sel_if.empty())

@@ -47,6 +47,7 @@ public:
                             std::unique_ptr<Core::Frontend::GraphicsContext> context_);
     ~RendererVulkan() override;
 
+    void PresentLoading();
     void Composite(std::span<const Tegra::FramebufferConfig> framebuffers) override;
 
     std::vector<u8> GetAppletCaptureBuffer() override;

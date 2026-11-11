@@ -1,3 +1,4 @@
+#include <vector>
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -183,6 +184,11 @@ private:
 #ifdef _WIN32
     size_t committed_size = 0;
 #endif
+    size_t protection_end = 0;
+    size_t executable_end = 0;
+    size_t write_begin = 0;
+    bool writing = true;
+    std::vector<size_t> patch_pages;
     bool prelude_complete = false;
 
     void GenRunCode(std::function<void(BlockOfCode&)> rcp);

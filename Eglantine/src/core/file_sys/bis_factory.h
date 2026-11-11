@@ -35,7 +35,11 @@ class PlaceholderCache;
 /// registered caches.
 class BISFactory {
 public:
+#if !defined(__PROSPERO__) // not PS5
     explicit BISFactory(VirtualDir nand_root, VirtualDir load_root, VirtualDir dump_root);
+#else // PS5
+    explicit BISFactory(VirtualDir nand_root, VirtualDir load_root, VirtualDir dump_root, VirtualDir firmware_root = {});
+#endif // PS5
     ~BISFactory();
 
     VirtualDir GetSystemNANDContentDirectory() const;

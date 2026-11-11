@@ -12,6 +12,8 @@
 #include "video_core/renderer_vulkan/present/lsfg_common.h"
 #endif
 #include "video_core/renderer_vulkan/vk_present_manager.h"
+#include "gpu_failure.h"
+#include "performance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -164,7 +166,19 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     }
 
     if (use_present_thread) {
-        present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+        present_thread = std::jthread([this](std::stop_token token) { try {
+            PresentThread(token);
+        } catch (...) {
+            const auto error = std::current_exception();
+            {
+                std::scoped_lock lock{queue_mutex, free_mutex};
+                present_failure = error;
+                present_queue.clear();
+            }
+            free_cv.notify_all();
+            frame_cv.notify_all();
+            Eden::RecordGpuFailure(error);
+        } });
     }
 }
 
@@ -174,8 +188,10 @@ Frame* PresentManager::GetRenderFrame() {
 
     VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::PresentWait};
     // Wait for free presentation frames
+    ::Eden::Performance::Timer present_wait_timer(::Eden::Performance::gpu_present_wait);
     std::unique_lock lock{free_mutex};
-    free_cv.wait(lock, [this] { return !free_queue.empty(); });
+    free_cv.wait(lock, [this] { return present_failure || !free_queue.empty(); });
+    if (present_failure) std::rethrow_exception(present_failure);
 
     // Take the frame from the queue
     Frame* frame = free_queue.front();
@@ -192,6 +208,7 @@ void PresentManager::Present(Frame* frame) {
     if (use_present_thread) {
         scheduler.Record([this, frame](vk::CommandBuffer) {
             std::unique_lock lock{queue_mutex};
+            if (present_failure) return;
             present_queue.push_back(frame);
             frame_cv.notify_one();
         });
@@ -323,7 +340,7 @@ void PresentManager::WaitPresent() {
     // Wait for the present queue to be empty
     {
         std::unique_lock queue_lock{queue_mutex};
-        frame_cv.wait(queue_lock, [this] { return present_queue.empty(); });
+        frame_cv.wait(queue_lock, [this] { return present_failure || present_queue.empty(); });
     }
 
     // The above condition will be satisfied when the last frame is taken from the queue.

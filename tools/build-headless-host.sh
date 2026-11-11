@@ -50,13 +50,8 @@ cmake -S "$eden" -B "$scratch/build" -G Ninja \
     -DDYNARMIC_ENABLE_NO_EXECUTE_SUPPORT=ON -DDYNARMIC_IGNORE_ASSERTS=OFF \
     -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_X11=OFF -DSDL_WAYLAND=OFF \
     -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF
-python3 -B "$root/headless/check_slab_lifetime.py" \
-    "$scratch/build/headless/include/core/hle/kernel/slab_helpers.h" \
-    "$scratch/source/src/core/hle/kernel/slab_helpers.h"
+python3 -B "$root/headless/check_slab_lifetime.py" "$scratch/source/src/core/hle/kernel/slab_helpers.h"
 cmake --build "$scratch/build" --target eden-romfs-check eden-devices-check eden-scalar-check eden-memory-check eden-ryujinx-check eden-mods-check eden-nup-check eden-shader-cache-check eden-settings-check eden-patch-library-check eden-update-check eden-update-files-check eden-profiles-check eden-save-sync-check -j "${EDEN_BUILD_JOBS:-$(nproc)}"
-python3 -B "$root/tools/check-sparse-header.py" "$scratch/build"
-python3 -B "$root/tools/check-macro-headers.py" "$scratch/build"
-python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/build"
 python3 -B "$root/tools/check-pipeline-cache.py"
 python3 -B "$root/tools/check-macro-native.py"
 python3 -B "$root/tools/check-heap-growth.py"

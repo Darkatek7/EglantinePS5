@@ -6,7 +6,10 @@
 #include "video_core/frame_gen/lossless_dll.h"
 #include "video_core/renderer_vulkan/present/lsfg_shaders.h"
 #include "video_core/renderer_vulkan/present/util.h"
+#include <string>
+#include "common/settings.h"
 #include "video_core/vulkan_common/vulkan_device.h"
+#include "diagnostics.h"
 
 namespace Vulkan {
 
@@ -39,6 +42,8 @@ LsfgShaders::LsfgShaders(const Device& device) {
         modules.emplace(id, CreateWrappedShaderModule(device, words));
     }
     valid = true;
+    if (wanted)
+        Eden::Report("framegen", ("shaders ready: " + std::to_string(code.size()) + " modules").c_str());
 }
 
 VkShaderModule LsfgShaders::Get(u32 shader_id) const {

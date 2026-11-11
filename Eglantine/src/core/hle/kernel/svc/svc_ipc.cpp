@@ -1,3 +1,8 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#include "core/arm/debug.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -30,7 +35,26 @@ Result SendSyncRequestImpl(KernelCore& kernel, uintptr_t message, size_t buffer_
     ASSERT(parent.IsNotNull());
 
     // Send the request.
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto ipc_start = ::Eden::Performance::NowNs();
+#else // PS5
+#endif // PS5
     const Result result = session->SendSyncRequest(kernel, message, buffer_size);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const long long ipc_ns = ::Eden::Performance::NowNs() - ipc_start;
+    ::Eden::Performance::AddNs(::Eden::Performance::guest_ipc_wait, ipc_ns);
+    {
+        bool fresh = false;
+        const unsigned ipc_slot =
+            ::Eden::Performance::IpcThreadSlotFor(GetCurrentThread(kernel).GetThreadId(), &fresh);
+        if (fresh) {
+            if (const auto ipc_name = Core::GetThreadName(&GetCurrentThread(kernel)))
+                ::Eden::Performance::SetIpcThreadName(ipc_slot, ipc_name->c_str());
+        }
+        ::Eden::Performance::AddIpcThread(ipc_slot, ipc_ns);
+    }
+#else // PS5
+#endif // PS5
     if (R_SUCCEEDED(result)) {
         GetCurrentThread(kernel).WaitForStartupThreads(kernel);
     }

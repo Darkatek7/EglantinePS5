@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -49,7 +50,7 @@ void InnerFence::Wait() {
         scheduler.GetMasterSemaphore().Wait(wait_tick);
         return;
     }
-    scheduler.Wait(wait_tick);
+    { auto timer = Eden::Performance::VulkanTimer(6); scheduler.Wait(wait_tick); }
 }
 
 FenceManager::FenceManager(VideoCore::RasterizerInterface& rasterizer_, Tegra::GPU& gpu_,

@@ -1,3 +1,26 @@
+#include <cstdio>
+#include <cstdlib>
+// The fast-path switches (fast_paths.cmake) and their one-time configuration from env.txt.
+extern "C" {
+bool eden_fcmp_adc = true, eden_light_dmb = true, eden_checkbit_flags = true, eden_jit_frame_once = true;
+unsigned long long eden_dmb_dropped = 0, eden_checkbit_fused = 0;
+void eden_fast_paths_configure() {
+    static bool configured = false;
+    if (__atomic_exchange_n(&configured, true, __ATOMIC_ACQ_REL)) return;
+    const auto off = [](const char* name) {
+        const char* all = std::getenv("EDEN_JIT_FAST_PATHS");
+        const char* one = std::getenv(name);
+        return (all != nullptr && all[0] == '0') || (one != nullptr && one[0] == '0');
+    };
+    // Only ever turns a switch off: tests set them directly.
+    if (off("EDEN_JIT_FCMP_ADC")) eden_fcmp_adc = false;
+    if (off("EDEN_JIT_LIGHT_DMB")) eden_light_dmb = false;
+    if (off("EDEN_JIT_CHECKBIT_FLAGS")) eden_checkbit_flags = false;
+    if (off("EDEN_JIT_FRAME_ONCE")) eden_jit_frame_once = false;
+    std::printf("EDEN_JIT_FAST_PATHS fcmp_adc=%d light_dmb=%d checkbit_flags=%d frame_once=%d\n", eden_fcmp_adc,
+                eden_light_dmb, eden_checkbit_flags, eden_jit_frame_once);
+}
+}
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -1411,7 +1434,13 @@ static Xbyak::Reg64 SetFpscrNzcvFromFlags(BlockOfCode& code, EmitContext& ctx) {
 
     code.mov(nzcv, 0x0101'4100'8000'0100);
     code.sete(cl);
-    code.rcl(cl, 5);  // cl = ZF:CF:0000
+    if (__atomic_load_n(&eden_fcmp_adc, __ATOMIC_RELAXED)) {
+        // fast_paths.cmake: sete leaves the compare's CF; same count, no microcode.
+        code.adc(cl, cl);  // cl = ZF:CF
+        code.shl(cl, 4);   // cl = ZF:CF:0000
+    } else {
+        code.rcl(cl, 5);  // cl = ZF:CF:0000
+    }
     code.shr(nzcv, cl);
 
     return nzcv;

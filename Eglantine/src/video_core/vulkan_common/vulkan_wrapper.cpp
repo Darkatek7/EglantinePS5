@@ -15,6 +15,7 @@
 #include "video_core/vulkan_common/vk_enum_string_helper.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "performance.h"
 
 namespace Vulkan::vk {
 
@@ -781,6 +782,7 @@ PipelineLayout Device::CreatePipelineLayout(const VkPipelineLayoutCreateInfo& ci
 
 Pipeline Device::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, VkPipelineCache cache) const {
     VkPipeline object = VK_NULL_HANDLE;
+    auto timer = Eden::Performance::VulkanTimer(0);
     auto const result = dld->vkCreateGraphicsPipelines(handle, cache, 1, &ci, nullptr, &object);
     // Adreno 5xx drivers do not properly return when a graphics pipeline fails to be created
     // Some (unkown) Mali drivers also do not properly return
@@ -794,6 +796,7 @@ Pipeline Device::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, 
 Pipeline Device::CreateComputePipeline(const VkComputePipelineCreateInfo& ci,
                                        VkPipelineCache cache) const {
     VkPipeline object;
+    auto timer = Eden::Performance::VulkanTimer(1);
     Check(dld->vkCreateComputePipelines(handle, cache, 1, &ci, nullptr, &object));
     return Pipeline(object, handle, *dld);
 }

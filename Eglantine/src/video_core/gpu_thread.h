@@ -1,3 +1,8 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <pthread.h>
+#include <condition_variable>
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -102,11 +107,20 @@ struct CommandDataContainer {
 
 /// Struct used to synchronize the GPU thread
 struct SynchState final {
+#if !defined(__PROSPERO__) // not PS5
     using CommandQueue = Common::SPSCQueue<CommandDataContainer>;
+#else // PS5
+    using CommandQueue = Common::SPSCQueue<CommandDataContainer, 8>;
+#endif // PS5
     std::mutex write_lock;
     CommandQueue queue;
     u64 last_fence{};
     std::atomic<u64> signaled_fence{};
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    std::mutex fence_mutex;
+    std::condition_variable_any fence_cv;
+#endif // PS5
     std::condition_variable_any cv;
 };
 
@@ -115,6 +129,10 @@ class ThreadManager final {
 public:
     explicit ThreadManager(Core::System& system_);
     ~ThreadManager();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    void Stop();
+#endif // PS5
 
     /// Creates and starts the GPU thread.
     void StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context,
@@ -146,7 +164,14 @@ private:
     Core::System& system;
     VideoCore::RasterizerInterface* rasterizer = nullptr;
     SynchState state;
+#if !defined(__PROSPERO__) // not PS5
     std::jthread thread;
+#else // PS5
+    void RunWorker(VideoCore::RendererBase&, Core::Frontend::GraphicsContext&, Tegra::Control::Scheduler&);
+    pthread_t thread{};
+    std::stop_source stop_source;
+    bool thread_joinable{};
+#endif // PS5
 };
 
 } // namespace VideoCommon::GPUThread

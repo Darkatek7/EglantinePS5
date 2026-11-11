@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -1349,7 +1350,7 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
 }
 
 void TextureCacheRuntime::Finish() {
-    scheduler.Finish();
+    { auto timer = Eden::Performance::VulkanTimer(8); scheduler.Finish(); }
 }
 
 StagingBufferRef TextureCacheRuntime::UploadStagingBuffer(size_t size, bool deferred) {
@@ -5198,7 +5199,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             scheduler.Flush();
         }
         while (!pending_transcodes.empty() && held_bytes + decode_bytes > held_limit) {
-            scheduler.Wait(pending_transcodes.front().tick);
+            { auto timer = Eden::Performance::VulkanTimer(8); scheduler.Wait(pending_transcodes.front().tick); }
             while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
                 held_bytes -= bytes_of(pending_transcodes.front());
                 pending_transcodes.pop_front();

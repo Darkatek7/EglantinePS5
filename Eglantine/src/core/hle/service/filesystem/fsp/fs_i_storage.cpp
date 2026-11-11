@@ -1,3 +1,7 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -53,7 +57,16 @@ Result IStorage::Read(
 
     // Read the data from the Storage backend
     const ReadTraceScope trace{ReadTraceSource::Storage, length};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto fs_start = ::Eden::Performance::NowNs();
+    const auto fs_read = backend->Read(out_bytes.data(), length, offset);
+    if (fs_read != static_cast<std::size_t>(length))
+        LOG_ERROR(Service_FS, "EDEN_FS_SHORT_STORAGE offset={:#x} length={} read={} size={}", offset, length, fs_read, backend->GetSize());
+    ::Eden::Performance::AddSince(::Eden::Performance::guest_fs_storage, fs_start);
+    ::Eden::Performance::guest_fs_storage_bytes.fetch_add(static_cast<unsigned long long>(length), std::memory_order_relaxed);
+#else // PS5
     backend->Read(out_bytes.data(), length, offset);
+#endif // PS5
 
     R_SUCCEED();
 }

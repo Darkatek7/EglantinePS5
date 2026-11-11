@@ -6,6 +6,10 @@
 
 #include <algorithm>
 #include <memory>
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "performance.h"
+#endif // PS5
 #include <vector>
 
 #include "common/assert.h"
@@ -34,6 +38,10 @@ void Scheduler::BindChannel(GPU& gpu, s32 bind_id) {
 void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
     std::shared_ptr<ChannelState> channel_state;
     {
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        const ::Eden::Performance::Timer sched_lock_timer(::Eden::Performance::gpu_sched_lock);
+#endif // PS5
         std::unique_lock lk(scheduling_guard);
         auto it = channels.find(channel);
         ASSERT(it != channels.end());
@@ -42,8 +50,19 @@ void Scheduler::Push(GPU& gpu, s32 channel, CommandList&& entries) {
     BindChannel(gpu, channel_state->bind_id);
     // Process commands outside the lock to reduce contention.
     // Multiple channels can prepare their commands in parallel.
+#if !defined(__PROSPERO__) // not PS5
     channel_state->payload->dma_pusher.Push(std::move(entries));
     channel_state->payload->dma_pusher.DispatchCalls();
+#else // PS5
+    {
+        const ::Eden::Performance::Timer dma_push_timer(::Eden::Performance::gpu_dma_push);
+        channel_state->payload->dma_pusher.Push(std::move(entries));
+    }
+    {
+        const ::Eden::Performance::Timer dma_dispatch_timer(::Eden::Performance::gpu_dma_dispatch);
+        channel_state->payload->dma_pusher.DispatchCalls();
+    }
+#endif // PS5
     if (channel_state->payload->dma_pusher.HasPendingAcquire() &&
         std::find(pending_channels.begin(), pending_channels.end(), channel_state) ==
             pending_channels.end()) {

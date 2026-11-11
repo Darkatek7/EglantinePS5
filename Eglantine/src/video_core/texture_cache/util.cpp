@@ -1350,16 +1350,21 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
             const u32 level_size = plane_dim * copy.image_extent.depth *
                                    copy.image_subresource.num_layers *
                                    BytesPerBlock(PixelFormat::A8B8G8R8_UNORM);
-            decode_scratch.resize_destructive(level_size);
-
-            Tegra::Texture::ASTC::Decompress(
-                input_offset, copy.image_extent.width, copy.image_extent.height,
-                copy.image_subresource.num_layers * copy.image_extent.depth, tile_size.width,
-                tile_size.height, decode_scratch);
-
-            compress(decode_scratch, copy.image_extent.width, copy.image_extent.height,
-                     copy.image_subresource.num_layers * copy.image_extent.depth,
-                     output.subspan(output_offset));
+            // A layer at a time (headless/CMakeLists.txt): ASTC blocks are 16 bytes, BC blocks
+            // cover 4x4 pixels.
+            const u32 layers = copy.image_subresource.num_layers * copy.image_extent.depth;
+            const u32 layer_input = Common::DivideUp(copy.image_extent.width, tile_size.width) *
+                                    Common::DivideUp(copy.image_extent.height, tile_size.height) * 16;
+            const u32 layer_output = Common::AlignUp(copy.image_extent.width, 4) *
+                                     Common::AlignUp(copy.image_extent.height, 4) / bpp_div;
+            decode_scratch.resize_destructive(level_size / (std::max)(layers, 1u));
+            for (u32 layer = 0; layer < layers; ++layer) {
+                Tegra::Texture::ASTC::Decompress(
+                    input_offset.subspan(layer * layer_input), copy.image_extent.width,
+                    copy.image_extent.height, 1, tile_size.width, tile_size.height, decode_scratch);
+                compress(decode_scratch, copy.image_extent.width, copy.image_extent.height, 1,
+                         output.subspan(output_offset + layer * layer_output));
+            }
 
             const u32 aligned_plane_dim = Common::AlignUp(copy.image_extent.width, 4) *
                                           Common::AlignUp(copy.image_extent.height, 4);

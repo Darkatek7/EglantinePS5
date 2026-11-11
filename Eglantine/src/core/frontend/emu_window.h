@@ -26,6 +26,10 @@ enum class WindowSystemType {
     Cocoa,
     Android,
     Xcb,
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    PS5,
+#endif // PS5
 };
 
 /**

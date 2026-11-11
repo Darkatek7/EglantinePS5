@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -186,6 +187,7 @@ bool Swapchain::AcquireNextImage(bool may_flush) {
         break;
     default:
         LOG_ERROR(Render_Vulkan, "vkAcquireNextImageKHR returned {}", string_VkResult(result));
+        vk::Check(result);
         break;
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -196,26 +198,26 @@ bool Swapchain::AcquireNextImage(bool may_flush) {
     const auto wait_with_frame_pacing = [this, may_flush] {
     switch (Settings::values.frame_pacing_mode.GetValue()) {
     case Settings::FramePacingMode::Target_Auto:
-        scheduler.Wait(resource_ticks[image_index], 0.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 0.0, may_flush); }
         break;
     case Settings::FramePacingMode::Target_30:
-        scheduler.Wait(resource_ticks[image_index], 30.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 30.0, may_flush); }
         break;
     case Settings::FramePacingMode::Target_60:
-        scheduler.Wait(resource_ticks[image_index], 60.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 60.0, may_flush); }
         break;
     case Settings::FramePacingMode::Target_90:
-        scheduler.Wait(resource_ticks[image_index], 90.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 90.0, may_flush); }
         break;
     case Settings::FramePacingMode::Target_120:
-        scheduler.Wait(resource_ticks[image_index], 120.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 120.0, may_flush); }
         break;
     }
     };
 
 #ifdef __ANDROID__
     if (android_get_device_api_level() >= 30) {
-        scheduler.Wait(resource_ticks[image_index], 0.0, may_flush);
+        { auto timer = Eden::Performance::VulkanTimer(9); scheduler.Wait(resource_ticks[image_index], 0.0, may_flush); }
     } else {
         wait_with_frame_pacing();
     }
@@ -257,6 +259,7 @@ void Swapchain::Present(VkSemaphore render_semaphore) {
         break;
     default:
         LOG_CRITICAL(Render_Vulkan, "Failed to present with error {}", string_VkResult(result));
+        vk::Check(result);
         break;
     }
     ++frame_index;

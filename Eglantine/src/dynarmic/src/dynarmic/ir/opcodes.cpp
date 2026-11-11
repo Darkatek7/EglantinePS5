@@ -49,7 +49,7 @@ alignas(64) static const Meta opcode_info[] = {
 #define OPCODE(name, type, ...) Meta{{__VA_ARGS__}, type},
 #define A32OPC(name, type, ...) Meta{{__VA_ARGS__}, type},
 #define A64OPC(name, type, ...) Meta{{__VA_ARGS__}, type},
-#include "./opcodes.inc"
+#include "dynarmic/ir/opcodes.inc"
 #undef OPCODE
 #undef A32OPC
 #undef A64OPC
@@ -84,7 +84,7 @@ std::string_view GetNameOf(Opcode op) noexcept {
 #define OPCODE(name, type, ...) #name,
 #define A32OPC(name, type, ...) #name,
 #define A64OPC(name, type, ...) #name,
-#include "./opcodes.inc"
+#include "dynarmic/ir/opcodes.inc"
 #undef OPCODE
 #undef A32OPC
 #undef A64OPC

@@ -1,3 +1,8 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/dev_render_passes.inc"
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -260,6 +265,10 @@ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
 }
 
 void RasterizerOpenGL::Draw(bool is_indexed, u32 instance_count) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::Timer draw_timer(::Eden::Performance::rasterizer_draw);
+#else // PS5
+#endif // PS5
     PrepareDraw(is_indexed, [this, is_indexed, instance_count](GLenum primitive_mode) {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
         const GLuint base_instance = GLuint(draw_state.base_instance);
@@ -298,6 +307,15 @@ void RasterizerOpenGL::Draw(bool is_indexed, u32 instance_count) {
                 glDrawArraysInstancedBaseInstance(primitive_mode, base_vertex, num_vertices,
                                                   num_instances, base_instance);
             }
+        }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        CaptureDevelopmentPass();
+#else // PS5
+#endif // PS5
+        static unsigned traced_draws{};
+        if (traced_draws < 3) {
+            ++traced_draws;
+            LOG_INFO(Render_OpenGL, "EDEN_GUEST_GL_DRAW count={} error={}", traced_draws, glGetError());
         }
     });
 }

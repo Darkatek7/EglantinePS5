@@ -220,11 +220,14 @@ const CPUCaps g_cpu_caps = [] {
         if (caps.tsc_crystal_ratio_denominator) {
             caps.tsc_frequency = u64(caps.crystal_frequency)
                 * caps.tsc_crystal_ratio_numerator / caps.tsc_crystal_ratio_denominator;
+#if !defined(__PROSPERO__) // not PS5
         } else {
             caps.tsc_frequency = X64::EstimateRDTSCFrequency();
+#endif // PS5
         }
     }
 
+#if !defined(__PROSPERO__) // not PS5
     // AMD CPUs have no leaf 0x15 (Zen 4 stops at 0x10): measure their invariant TSC too, or every
     // guest clock read (CNTPCT, which games read thousands of times a frame) goes through the
     // host's much slower QueryPerformanceCounter. Intel CPUs that have the leaf but report no
@@ -233,6 +236,13 @@ const CPUCaps g_cpu_caps = [] {
     if (max_std_fn < 0x15 && caps.invariant_tsc && caps.tsc_frequency == 0) {
         caps.tsc_frequency = X64::EstimateRDTSCFrequency();
     }
+#else // PS5
+    // The PS5 has an invariant TSC but no leaf 0x15: measure every invariant TSC under 1 GHz
+    // (tools/check-tsc-fallback.py).
+    if (caps.invariant_tsc && caps.tsc_frequency < 1'000'000'000ULL) {
+        caps.tsc_frequency = X64::EstimateRDTSCFrequency();
+    }
+#endif // PS5
 
     if (max_std_fn >= 0x16) {
         __cpuid(cpu_id, 0x16);

@@ -520,6 +520,11 @@ void KPageTableBase::Finalize() {
             m_system.DeviceMemory().buffer.Unmap(GetInteger(addr), size, false);
         }
 
+        // The memory manager is recreated after a kernel shutdown.
+        if (m_system.Kernel().IsShuttingDown()) {
+            return;
+        }
+
         // Get physical pages.
         KPageGroup pg(m_system.Kernel(), m_block_info_manager);
         this->MakePageGroup(pg, addr, size / PageSize);

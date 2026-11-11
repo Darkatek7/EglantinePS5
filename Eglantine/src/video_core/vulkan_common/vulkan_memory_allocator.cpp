@@ -37,6 +37,14 @@
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
+#include <atomic>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include "performance.h"
+namespace Common { void GuestMemoryUsage(std::size_t* span, std::size_t* held) noexcept; }
+extern "C" std::size_t eden_heap_committed(void);
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "common/settings.h"
@@ -197,12 +205,38 @@ void MemoryCommit::Release() {
     size = 0;
 }
 
+namespace {
+std::mutex vma_probe_mutex;
+VmaAllocator vma_probe_allocator{};
+void EdenVmaSnapshot(VmaAllocator allocator, unsigned tag) {
+    char* json = nullptr;
+    vmaBuildStatsString(allocator, &json, VK_TRUE);
+    if (!json) return;
+    char path[192];
+    std::snprintf(path, sizeof(path), "/data/eglantineps5/logs/mkw-vma-%d-%u.json", getpid(), tag);
+    const auto bytes = std::strlen(json);
+    bool written = false;
+    if (bytes <= (8U << 20)) {
+        if (FILE* file = std::fopen(path, "w")) {
+            written = std::fwrite(json, 1, bytes, file) == bytes;
+            std::fclose(file);
+        }
+    }
+    std::fprintf(stderr, "MKW_VMA_MAP tag=%u bytes=%zu written=%u\n", tag, bytes, unsigned(written));
+    vmaFreeStatsString(allocator, json);
+}
+}
+extern "C" void eden_vma_probe(unsigned seconds) {
+    std::lock_guard lock{vma_probe_mutex};
+    if (vma_probe_allocator) EdenVmaSnapshot(vma_probe_allocator, 100000 + seconds);
+}
 MemoryAllocator::MemoryAllocator(const Device &device_)
         : device{device_}, allocator{device.GetAllocator()},
             properties{device_.GetPhysical().GetMemoryProperties().memoryProperties},
             buffer_image_granularity{
                     device_.GetPhysical().GetProperties().limits.bufferImageGranularity} {
 
+    { std::lock_guard lock{vma_probe_mutex}; vma_probe_allocator = allocator; }
     // Preserve the previous "RenderDoc small heap" trimming behavior that we had in original vma minus the heap bug
     if (device.HasDebuggingToolAttached())
     {
@@ -219,7 +253,11 @@ MemoryAllocator::MemoryAllocator(const Device &device_)
     }
 }
 
-MemoryAllocator::~MemoryAllocator() = default;
+MemoryAllocator::~MemoryAllocator() {
+    std::lock_guard lock{vma_probe_mutex};
+    if (vma_probe_allocator == allocator) vma_probe_allocator = nullptr;
+    for (auto pool : temporary_pools) if (pool) vmaDestroyPool(allocator, pool);
+}
 
 vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicated) const
 {
@@ -367,9 +405,34 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool
         sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
     }
     VkImage sparse{};
-    if (device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr,
-                                                 &sparse) != VK_SUCCESS) {
-        return vk::Image{};
+    VkResult sparse_result = device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr, &sparse);
+    if (sparse_result != VK_SUCCESS) {
+        VkImageCreateInfo binding_only = ci;
+        binding_only.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
+        const VkResult second = device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &binding_only, nullptr, &sparse);
+        std::fprintf(stderr, "EDEN_SPARSE_IMAGE %ux%ux%u, %u layers, %u levels, format %d, usage 0x%x, flags 0x%x, tiling %d: "
+                     "with residency %d, binding alone %d\n",
+                     ci.extent.width, ci.extent.height, ci.extent.depth, ci.arrayLayers, ci.mipLevels, int(ci.format),
+                     unsigned(ci.usage), unsigned(ci.flags), int(ci.tiling), int(sparse_result), int(second));
+        if (second != VK_SUCCESS) {
+            // Once: which smaller sizes does the driver accept? Each probe is made and destroyed at once.
+            static std::atomic<bool> probed{false};
+            if (!probed.exchange(true)) {
+                for (u32 layers = ci.arrayLayers / 2; layers >= 1; layers /= 2) {
+                    VkImageCreateInfo probe = sparse_ci;
+                    probe.arrayLayers = layers;
+                    VkImage probe_image{};
+                    const VkResult probed_result =
+                        device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &probe, nullptr, &probe_image);
+                    std::fprintf(stderr, "EDEN_SPARSE_PROBE %u layers: %d\n", layers, int(probed_result));
+                    if (probed_result == VK_SUCCESS) {
+                        device.GetDispatchLoader().vkDestroyImage(*device.GetLogical(), probe_image, nullptr);
+                    }
+                    if (layers == 1) break;
+                }
+            }
+            return vk::Image{};
+        }
     }
     return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
                      device.GetDispatchLoader());
@@ -563,8 +626,40 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
-                                           &allocation, &alloc_info));
+    VkResult created = vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
+                                           &allocation, &alloc_info);
+    if (created != VK_SUCCESS) {
+        VmaAllocationCreateInfo outside_budget = alloc_ci;
+        outside_budget.flags &= ~static_cast<VmaAllocationCreateFlags>(VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT);
+        created = vmaCreateBufferWithAlignment(allocator, &ci, &outside_budget, min_alignment, &handle,
+                                           &allocation, &alloc_info);
+        static std::atomic<unsigned long long> refused{0};
+        const auto times = refused.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((times & (times - 1)) == 0) { // the 1st, 2nd, 4th, 8th ... time
+            std::fprintf(stderr, "EDEN_GRAPHICS_MEMORY budget refused %llu requests; asked again outside it: result %d, buffer of %llu bytes, usage 0x%x\n",
+                         times, int(created), static_cast<unsigned long long>(ci.size), unsigned(ci.usage));
+        }
+        if (created != VK_SUCCESS) {
+            VmaBudget held[VK_MAX_MEMORY_HEAPS]{};
+            vmaGetHeapBudgets(allocator, held);
+            unsigned long long blocks = 0, used = 0;
+            for (const VmaBudget& heap : held) {
+                blocks += heap.statistics.blockBytes;
+                used += heap.statistics.allocationBytes;
+            }
+            const auto free_block = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed);
+            std::size_t guest_span = 0, guest_held = 0;
+            ::Common::GuestMemoryUsage(&guest_span, &guest_held);
+            std::fprintf(stderr, "EDEN_GRAPHICS_MEMORY refused outside the budget too (result %d): the pool's largest free "
+                         "block is %llu MiB; the allocator holds %llu MiB in blocks, %llu MiB of it in use; the guest's "
+                         "memory holds %llu MiB, the heap %llu MiB\n",
+                         int(created), free_block ? free_block() >> 20 : 0ull, blocks >> 20, used >> 20,
+                         static_cast<unsigned long long>(guest_held >> 20),
+                         static_cast<unsigned long long>(eden_heap_committed() >> 20));
+            ::Eden::Performance::ReportHeap("a buffer was refused");
+        }
+    }
+    vk::Check(created);
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     u8 *data = reinterpret_cast<u8 *>(alloc_info.pMappedData);

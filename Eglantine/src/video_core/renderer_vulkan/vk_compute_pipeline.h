@@ -1,3 +1,4 @@
+#include "headless/striped_wait.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -140,8 +141,8 @@ private:
 
     std::function<void()> build_task;
     std::atomic_bool build_claimed{false};
-    std::condition_variable build_condvar;
-    std::mutex build_mutex;
+    ::Eden::StripedCondition build_condvar;
+    ::Eden::StripedMutex build_mutex;
     std::atomic_bool is_built{false};
     /// Shader cache v2: the job that builds it (PipelineBuildQueue::jobs)
     VideoCommon::ShaderJobScheduler* jobs{};

@@ -19,6 +19,19 @@ applied as ordinary commits with their messages.
 
 ## Upstream from here on
 
+The PS5 port's changes to the core are part of these sources too: they once were text edits the
+build made at configure time (tools/prepare-vulkan-port.py, headless/*.cmake) and are now written
+here. Where the PS5 build, the host's test build (`make test`) or a build switch need different
+code, a chain of conditionals marks it, each line ending in a fixed comment:
+
+    #if !defined(__PROSPERO__) // not PS5
+    #elif defined(EDEN_DEV_PROFILE) // PS5 development build
+    #else // PS5
+    #endif // PS5
+
+(tools/eglantine_source.py reads a source as one configuration compiles it; the switches are
+compile definitions of every target, headless/inject.cmake.)
+
 There is no submodule, subtree or patch series to keep in sync: upstream diverges a lot from what
 the PS5 needs, so its changes come over by hand, one at a time, where we want them. To look at what
 it has done since:
@@ -32,11 +45,8 @@ ours and upstream's, are in `git log -- Eglantine`.
 
 ## Not done yet
 
-- The PS5 layer (`headless/`, `tools/prepare-vulkan-port.py`) still edits this source at configure
-  time through text anchors written for the old pinned core. Many no longer match and run
-  leniently (`EDEN_PORT_LENIENT`, tools/build-package.sh). The way forward is to make those
-  changes here, in `Eglantine/`, and drop the anchors.
-- Release source checks still written for the old core: tools/core-source-checks-pending.txt.
+- PS5 changes this core does not have yet, each with the release source check that tests it:
+  tools/core-source-checks-pending.txt (those checks only warn until then).
 - dynarmic (`Eglantine/src/dynarmic`) is kept at the old pin's version (its PS5 port needs it).
 
 ## Our changes right after the import

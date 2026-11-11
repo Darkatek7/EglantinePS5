@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -103,14 +104,14 @@ DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& sched
     const VkDeviceSize needed{Common::AlignUp(size, alignment)};
     if (frame_reused) {
         frame_reused = false;
-        scheduler.Wait(frame_ticks[frame_index]);
+        { auto timer = Eden::Performance::VulkanTimer(10); scheduler.Wait(frame_ticks[frame_index]); }
     }
     if (cursor + needed > chunk_capacity) {
         if (chunk_cursor + 1 < chunks_per_frame) {
             ++chunk_cursor;
         } else {
             LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, stalling on the GPU");
-            scheduler.Finish();
+            { auto timer = Eden::Performance::VulkanTimer(10); scheduler.Finish(); }
             chunk_cursor = 0;
             ++generation;
         }

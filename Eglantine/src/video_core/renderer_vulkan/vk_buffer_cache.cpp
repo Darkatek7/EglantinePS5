@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -5,6 +6,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "dev_vulkan.h"
+#include "submission_origin.h"
 #include <array>
 #include <cstring>
 #include <cstdlib>
@@ -481,7 +484,7 @@ bool BufferCacheRuntime::IsFree(u64 tick) {
 }
 
 void BufferCacheRuntime::Wait(u64 tick) {
-    scheduler.Wait(tick);
+    { auto timer = Eden::Performance::VulkanTimer(7); scheduler.Wait(tick); }
 }
 
 void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
@@ -496,7 +499,7 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
         !VideoCommon::GpuSplit::OnBackThread()) {
         VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::ListSubmitWait};
         if (!scheduler.WaitSubmitted(tick)) {
-            scheduler.Wait(tick);
+            { auto timer = Eden::Performance::VulkanTimer(7); scheduler.Wait(tick); }
             return;
         }
     }
@@ -505,13 +508,14 @@ void BufferCacheRuntime::WaitSubmittedTick(u64 tick) {
 }
 
 void BufferCacheRuntime::Finish() {
-    scheduler.Finish();
+    ::Eden::VulkanProbe::GpuSubmitOriginScope origin{__builtin_return_address(0), true};
+    { auto timer = Eden::Performance::VulkanTimer(7); scheduler.Finish(); }
 }
 
 void BufferCacheRuntime::FinishForHostRead() {
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record(HostReadBarrier);
-    scheduler.Finish();
+    { auto timer = Eden::Performance::VulkanTimer(7); scheduler.Finish(); }
 }
 
 u64 BufferCacheRuntime::SubmitForHostRead() {
@@ -541,7 +545,7 @@ void BufferCacheRuntime::WaitForHostRead(u64 tick) {
         scheduler.GetMasterSemaphore().Wait(tick);
         return;
     }
-    scheduler.Wait(tick);
+    { auto timer = Eden::Performance::VulkanTimer(7); scheduler.Wait(tick); }
 }
 
 bool BufferCacheRuntime::IsFreeNow(u64 tick) {
@@ -677,6 +681,9 @@ void BufferCacheRuntime::ClearBuffer(VkBuffer dest_buffer, u32 offset, size_t si
 }
 
 bool BufferCacheRuntime::BindMultiRangeStorageBuffer(u64 key, bool is_written) {
+    if (::Eden::DevVulkan::disable_multi_range) {
+        return false;
+    }
     if (multi_range_sources.empty() || multi_range_total == 0) {
         return false;
     }

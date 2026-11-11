@@ -113,7 +113,7 @@ u64 CachedQuery::Flush([[maybe_unused]] bool async) {
     // To avoid this disable and re-enable keeping the dependency stream.
     // But we only have to do this if we have pending waits to be done.
     auto& stream = cache->Stream(type);
-    const bool slice_counter = WaitPending() && stream.IsEnabled();
+    const bool slice_counter = false; // PS5: do not split cached query reads.
     if (slice_counter) {
         stream.Disable();
     }

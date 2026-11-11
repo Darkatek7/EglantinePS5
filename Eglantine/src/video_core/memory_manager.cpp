@@ -1,3 +1,8 @@
+#include <atomic>
+#include "headless/performance.h"
+#include "common/scope_exit.h"
+#include "core/core.h"
+#include "core/gpu_dirty_memory_manager.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -14,7 +19,6 @@
 #include "core/core.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
-#include "memory_manager.h"
 #include "video_core/guest_memory.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_perf.h"
@@ -1054,6 +1058,26 @@ void MemoryManager::GetSubmappedRangeImpl(GPUVAddr gpu_addr, std::size_t size, b
 }
 
 void MemoryManager::FlushCaching() {
+    if (rasterizer != nullptr && ::Eden::Performance::gpu_dirty_pending.load(std::memory_order_relaxed) &&
+        ::Eden::Performance::gpu_dirty_pending.exchange(false, std::memory_order_acq_rel)) {
+        ::Eden::Performance::gpu_dirty_replays.fetch_add(1, std::memory_order_relaxed);
+        ::Eden::Performance::deferred_replay = true;
+        SCOPE_EXIT { ::Eden::Performance::deferred_replay = false; };
+        for (unsigned core = 0; core < ::Eden::Performance::kGuestCores; ++core) {
+            for (const auto& write : ::Eden::Performance::TakeDeferredWrites(core)) {
+                if (rasterizer->OnCPUWrite(write.address, write.end - write.address)) {
+                    // Collect represents 32 x 64-byte blocks, not an entire device page.
+                    constexpr u64 region_size = 1ULL << (Core::DEVICE_PAGEBITS - 1);
+                    for (u64 address = write.address; address < write.end;) {
+                        const u64 size = std::min<u64>(write.end - address,
+                                                  region_size - (address & (region_size - 1)));
+                        system.GetGPUDirtyMemoryManager()[core].Collect(address, size);
+                        address += size;
+                    }
+                }
+            }
+        }
+    }
     // Flush from the invalidate accumulator
     if (accumulator.InvalidateAll([this](GPUVAddr addr, size_t size) {
         GetSubmappedRangeImpl<false>(addr, size, page_stash2);

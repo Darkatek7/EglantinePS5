@@ -1,3 +1,8 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#include "core/arm/debug.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -299,12 +304,46 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
     }
     case IPC::CommandType::RequestWithContext:
     case IPC::CommandType::Request: {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        {
+            const auto hle_start = ::Eden::Performance::NowNs();
+#else // PS5
+#endif // PS5
         InvokeRequest(ctx);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+            ::Eden::Performance::RecordHle(service_name, ctx.GetCommand(), ::Eden::Performance::NowNs() - hle_start);
+            if (::Eden::Performance::trace_fs_callers.load(std::memory_order_relaxed) && std::string_view{service_name} == "IFileSystem") {
+                std::string frames;
+                for (const auto& entry : Core::GetBacktrace(&ctx.GetThread()))
+                    frames += fmt::format(" {}+{:X}", entry.module, entry.offset);
+                LOG_WARNING(Service_FS, "EDEN_FS_CALLER command={} thread={} name={} frames={}", ctx.GetCommand(),
+                            ctx.GetThread().GetThreadId(), Core::GetThreadName(&ctx.GetThread()).value_or("-"), frames);
+            }
+        }
+#else // PS5
+#endif // PS5
         break;
     }
     default:
         if (ctx.IsTipc()) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        {
+            const auto hle_start = ::Eden::Performance::NowNs();
+#else // PS5
+#endif // PS5
             InvokeRequestTipc(ctx);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+            ::Eden::Performance::RecordHle(service_name, ctx.GetCommand(), ::Eden::Performance::NowNs() - hle_start);
+            if (::Eden::Performance::trace_fs_callers.load(std::memory_order_relaxed) && std::string_view{service_name} == "IFileSystem") {
+                std::string frames;
+                for (const auto& entry : Core::GetBacktrace(&ctx.GetThread()))
+                    frames += fmt::format(" {}+{:X}", entry.module, entry.offset);
+                LOG_WARNING(Service_FS, "EDEN_FS_CALLER command={} thread={} name={} frames={}", ctx.GetCommand(),
+                            ctx.GetThread().GetThreadId(), Core::GetThreadName(&ctx.GetThread()).value_or("-"), frames);
+            }
+        }
+#else // PS5
+#endif // PS5
             break;
         }
 

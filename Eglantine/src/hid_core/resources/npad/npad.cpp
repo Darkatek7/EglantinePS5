@@ -168,6 +168,9 @@ void NPad::ControllerUpdate(Kernel::KernelCore& kernel, Core::HID::ControllerTri
         }
 
         auto& controller = controller_data[aruid_index][controller_idx];
+        if (controller.device == nullptr) {
+            continue;  // EglantinePS5: this applet resource is not activated yet
+        }
         const auto is_connected = controller.device->IsConnected();
         const auto npad_type = controller.device->GetNpadStyleIndex();
         const auto npad_id = controller.device->GetNpadIdType();

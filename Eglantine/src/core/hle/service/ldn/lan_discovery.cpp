@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/hle/service/ldn/lan_discovery.h"
+#include "multiplayer_ldn.h"
 #include "common/random.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/network_interface.h"
@@ -512,6 +513,7 @@ void LANDiscovery::SendPacket(const Network::LDNPacket& packet) {
 }
 
 void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
+    if (!Eden::Multiplayer::ValidLdnPacket(packet)) return;
     std::scoped_lock lock{packet_mutex};
     switch (packet.type) {
     case Network::LDNPacketType::Scan: {
@@ -551,6 +553,10 @@ void LANDiscovery::ReceivePacket(const Network::LDNPacket& packet) {
         NodeInfo info{};
         std::memcpy(&info, packet.data.data(), sizeof(NodeInfo));
 
+        if (state != State::AccessPointCreated ||
+            connected_clients.size() >= StationCountMax ||
+            std::find(connected_clients.begin(), connected_clients.end(), packet.local_ip) !=
+                connected_clients.end()) return;
         connected_clients.push_back(packet.local_ip);
 
         for (LanStation& station : stations) {

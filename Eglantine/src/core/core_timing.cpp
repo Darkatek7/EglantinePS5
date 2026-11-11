@@ -1,3 +1,4 @@
+#include "headless/guest_clock.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -324,6 +325,7 @@ u64 CoreTiming::GetClockTicks() const {
         target != CPU_CLOCK_BASE_MHZ) {
         fres = fres * target / CPU_CLOCK_BASE_MHZ;
     }
+    fres = ::Eden::GuestClock::Scale(fres);
     if (::Settings::values.sync_core_speed.GetValue()) {
         auto const ticks = f64(fres);
         auto const speed_limit = f64(Settings::SpeedLimit()) * 0.01;

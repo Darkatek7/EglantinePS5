@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "common/string_util.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -13,11 +17,19 @@ constexpr u64 NAND_USER_SIZE = 0x680000000;  // 26624 MiB
 constexpr u64 NAND_SYSTEM_SIZE = 0xA0000000; // 2560 MiB
 constexpr u64 NAND_TOTAL_SIZE = 0x747C00000; // 29820 MiB
 
+#if !defined(__PROSPERO__) // not PS5
 BISFactory::BISFactory(VirtualDir nand_root_, VirtualDir load_root_, VirtualDir dump_root_)
+#else // PS5
+BISFactory::BISFactory(VirtualDir nand_root_, VirtualDir load_root_, VirtualDir dump_root_, VirtualDir firmware_root)
+#endif // PS5
     : nand_root(std::move(nand_root_)), load_root(std::move(load_root_)),
       dump_root(std::move(dump_root_)),
       sysnand_cache(std::make_unique<RegisteredCache>(
+#if !defined(__PROSPERO__) // not PS5
           GetOrCreateDirectoryRelative(nand_root, "/system/Contents/registered"))),
+#else // PS5
+          firmware_root ? std::move(firmware_root) : GetOrCreateDirectoryRelative(nand_root, "/system/Contents/registered"))),
+#endif // PS5
       usrnand_cache(std::make_unique<RegisteredCache>(
           GetOrCreateDirectoryRelative(nand_root, "/user/Contents/registered"))),
       sysnand_placeholder(std::make_unique<PlaceholderCache>(
@@ -57,7 +69,15 @@ VirtualDir BISFactory::GetModificationLoadRoot(u64 title_id) const {
         return nullptr;
     if (load_root == nullptr)
         return nullptr;
+#if !defined(__PROSPERO__) // not PS5
     return GetOrCreateDirectoryRelative(load_root, fmt::format("/{:016X}", title_id));
+#else // PS5
+    const auto wanted = fmt::format("{:016X}", title_id);
+    if (load_root != nullptr)
+        for (const auto& folder : load_root->GetSubdirectories())
+            if (Common::ToUpper(folder->GetName()) == wanted) return folder;
+    return nullptr;
+#endif // PS5
 }
 
 VirtualDir BISFactory::GetModificationDumpRoot(u64 title_id) const {

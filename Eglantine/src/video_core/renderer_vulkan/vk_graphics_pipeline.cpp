@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "performance.h"
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -653,6 +654,7 @@ void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
 
 template <typename Spec>
 bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+    long long since = ::Eden::Performance::MarkStart();
     boost::container::small_vector<VideoCommon::ImageViewInOut, 160> views;
     boost::container::small_vector<VideoCommon::SamplerId, 96> samplers;
     views.reserve(num_image_elements);
@@ -851,7 +853,9 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
             texture_cache.LogPrepares(nullptr, false);
         }
     }
-    if (use_memo) {
+    // Every texture handle read out of guest memory, every sampler and view filled.
+    ::Eden::Performance::Mark(::Eden::Performance::cfg_read, since);
+    long long since_bind = ::Eden::Performance::MarkStart();    if (use_memo) {
         if (!memo_hit) {
             Count(g_memo_misses);
             // A pipeline whose draws keep changing textures stops paying for a memo nobody uses.
@@ -1011,6 +1015,8 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         }
     }
 
+    // The texture-buffer loop over every enabled stage.
+    ::Eden::Performance::Mark(::Eden::Performance::bind_tbo, since_bind);
     if (regs.transform_feedback_enabled != 0) {
         scheduler.RequestOutsideRenderPassOperationContext();
     }

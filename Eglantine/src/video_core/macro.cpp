@@ -1,3 +1,8 @@
+#include "headless/macro_native_hook.h"
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <exception>
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -754,6 +759,11 @@ struct MacroJITx64Impl final : public Xbyak::CodeGenerator, public DynamicCached
         Core::System* system = nullptr;
         std::array<u32, Macro::NUM_MACRO_REGISTERS> registers{};
         u32 carry_flag{};
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+        std::exception_ptr failure;
+        bool failed{};
+#endif // PS5
     };
     static_assert(offsetof(JITState, maxwell3d) == 0, "Maxwell3D is not at 0x0");
     using ProgramType = void (*)(JITState*, const u32*, const u32*);
@@ -784,6 +794,10 @@ void MacroJITx64Impl::Execute(Core::System& system, Engines::Maxwell3D& maxwell3
     state.system = &system;
     state.registers = {};
     program(&state, parameters.data(), parameters.data() + parameters.size());
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    if (state.failure) std::rethrow_exception(state.failure);
+#endif // PS5
 }
 
 void MacroJITx64Impl::Compile_ALU(Core::System& system, Macro::Opcode opcode) {
@@ -1011,18 +1025,39 @@ void MacroJITx64Impl::Compile_Read(Core::System& system, Macro::Opcode opcode) {
     Compile_ProcessResult(system, opcode.result_operation, opcode.dst);
 }
 
+#if !defined(__PROSPERO__) // not PS5
 static void MacroJIT_SendThunk(Core::System* system, Engines::Maxwell3D* maxwell3d, Macro::MethodAddress method_address, u32 value) {
     maxwell3d->CallMethod(*system, method_address.address, value, true);
+#else // PS5
+static void MacroJIT_SendThunk(MacroJITx64Impl::JITState* state, Macro::MethodAddress method_address, u32 value) noexcept {
+    try {
+        state->maxwell3d->CallMethod(*state->system, method_address.address, value, true);
+    } catch (...) {
+        state->failure = std::current_exception();
+        state->failed = true;
+    }
+#endif // PS5
 }
 
 void MacroJITx64Impl::Compile_Send(Core::System& system, Xbyak::Reg32 value) {
     Common::X64::ABI_PushRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
+#if !defined(__PROSPERO__) // not PS5
     mov(Common::X64::ABI_PARAM1, qword[STATE + offsetof(JITState, system)]);
     mov(Common::X64::ABI_PARAM2, qword[STATE + offsetof(JITState, maxwell3d)]);
     mov(Common::X64::ABI_PARAM3.cvt32(), METHOD_ADDRESS);
     mov(Common::X64::ABI_PARAM4.cvt32(), value);
+#else // PS5
+    mov(Common::X64::ABI_PARAM3.cvt32(), value);
+    mov(Common::X64::ABI_PARAM2.cvt32(), METHOD_ADDRESS);
+    mov(Common::X64::ABI_PARAM1, STATE);
+#endif // PS5
     Common::X64::CallFarFunction(*this, &MacroJIT_SendThunk);
     Common::X64::ABI_PopRegistersAndAdjustStack(*this, PersistentCallerSavedRegs(), 0);
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    cmp(byte[STATE + offsetof(JITState, failed)], 0);
+    jne(end_of_code, T_NEAR);
+#endif // PS5
 
     Xbyak::Label dont_process{};
     // Get increment
@@ -1365,7 +1400,17 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
             LOG_DEBUG(HW_GPU, "Native MME context={:#x}", context);
             LOG_DEBUG(HW_GPU, "Native MME start={:#x}, parameters={}, data={:08x}", method, parameters.size(), fmt::join(parameters, ","));
         }
+        ::Eden::MacroNative::Bench native_bench{native_back_matches, native_code, native_code_generation, method, "back"};
+        if (::Eden::MacroNative::TryRun(native_back_matches, native_code, native_code_generation,
+                method, parameters, std::span<u32>{maxwell3d.GetNativeDataRam()},
+                [&](u32 address) { return address < Maxwell3D::Regs::NUM_REGS ? maxwell3d.GetRegisterValue(address) : 0U; },
+                [&](u32 address, u32 value) {
+                    ::Eden::MacroNative::EmitBench emit_bench{native_bench};
+                    VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
+                    maxwell3d.MacroWrite(system, address, value);
+                }, "back")) return;
         // Reused between calls (a macro never calls another: methods >= 0xe00 are refused below);
+
         // filled only for calls that are interpreted.
         auto& fifo = native_fifo;
         // The channel's data RAM is the split's front's while it runs macros (split_writes).
@@ -1400,6 +1445,7 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         // A method write of the macro (also what a remembered call replays).
         bool read_memory = false;
         const auto emit = [&](u32 address, u32 value) {
+                ::Eden::MacroNative::EmitBench emit_bench{native_bench};
                 if (address >= 0xe00) return false;
                 if (split_writes != nullptr && !(*split_writes)[address]) {
                     ++split_unexpected_writes;
@@ -1687,8 +1733,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
 
 AnyCachedMacro MacroEngine::Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code) {
 #ifdef ARCHITECTURE_x86_64
+#if !defined(__PROSPERO__) // not PS5
     if (!is_interpreted)
         return std::make_unique<MacroJITx64Impl>(system, code);
+#else // PS5
+    (void)is_interpreted; // PS5: interpreter only, see above
+#endif // PS5
 #endif
     return MacroInterpreterImpl(code);
 }

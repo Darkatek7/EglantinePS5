@@ -70,15 +70,9 @@ cmake -S "$scratch/source" -B "$scratch/native-local" -G Ninja \
     -DENABLE_WERROR=OFF -Dzstd_FORCE_BUNDLED=ON -DBoost_FORCE_BUNDLED=ON -Dfmt_FORCE_BUNDLED=ON \
     -DDYNARMIC_ENABLE_NO_EXECUTE_SUPPORT=ON -DDYNARMIC_IGNORE_ASSERTS=OFF \
     -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF
-python3 -B "$root/headless/check_slab_lifetime.py" \
-    "$scratch/native-local/headless/include/core/hle/kernel/slab_helpers.h" \
-    "$scratch/source/src/core/hle/kernel/slab_helpers.h"
+python3 -B "$root/headless/check_slab_lifetime.py" "$scratch/source/src/core/hle/kernel/slab_helpers.h"
 echo "Building Eden with $jobs parallel jobs"
 cmake --build "$scratch/native-local" --target eden-headless core -j "$jobs"
-# In every build: an object that saw Eden's own table header would write a table the rest keeps sparse.
-python3 -B "$root/tools/check-sparse-header.py" "$scratch/native-local"
-python3 -B "$root/tools/check-macro-headers.py" "$scratch/native-local"
-python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/native-local"
 # Checks still written for the older pinned core (tools/core-source-checks-pending.txt) warn in a
 # lenient build (EDEN_PORT_LENIENT=1, tools/build-package.sh); every other check must pass.
 mapfile -t pending_checks < <(grep -v '^\s*\(#\|$\)' "$root/tools/core-source-checks-pending.txt" | awk '{print $1}')
@@ -94,14 +88,14 @@ python3() {
     command python3 "$@"
 }
 if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
-    for check in check-vulkan-handoff check-transient-images check-native-allocator-header \
+    for check in check-vulkan-handoff check-native-allocator-header \
                  check-gpu-time-probe check-fence-requirements; do
         python3 -B "$root/tools/$check.py"
     done
 fi
 # Source checks of the release configuration (development builds opt out: EDEN_SKIP_SOURCE_CHECKS=1).
 [[ ${EDEN_SKIP_SOURCE_CHECKS:-0} == 1 ]] && exit 0
-python3 -B "$root/headless/check_audio_shutdown.py" "$scratch/native-local/headless/core.cpp" "$scratch/source/src/core/core.cpp"
+python3 -B "$root/headless/check_audio_shutdown.py" "$scratch/source/src/core/core.cpp"
 python3 -B "$root/tools/check-load-failure.py"
 python3 -B "$root/tools/check-launcher-autoboot.py"
 python3 -B "$root/tools/check-extracted-content.py"

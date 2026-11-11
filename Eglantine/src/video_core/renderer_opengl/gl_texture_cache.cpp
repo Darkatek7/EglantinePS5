@@ -1,3 +1,7 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include <cstdio>
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -588,6 +592,17 @@ void TextureCacheRuntime::CopyImage(Image& dst_image, Image& src_image,
         glCopyImageSubData(src_name, src_target, src_origin.level, src_origin.x, src_origin.y,
                            src_origin.z, dst_name, dst_target, dst_origin.level, dst_origin.x,
                            dst_origin.y, dst_origin.z, region.width, region.height, region.depth);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        static unsigned copy_errors = 0;
+        const GLenum copy_error = copy_errors < 8 ? glGetError() : GL_NO_ERROR;
+        if (copy_error && copy_errors++ < 8) {
+            GLint sw = 0, dw = 0;
+            glGetTextureLevelParameteriv(src_name, src_origin.level, GL_TEXTURE_WIDTH, &sw);
+            glGetTextureLevelParameteriv(dst_name, dst_origin.level, GL_TEXTURE_WIDTH, &dw);
+            std::printf("EDEN_DEV_COPY error=%x src=%u target=%x level=%d x=%d width=%d dst=%u target=%x level=%d x=%d width=%d extent=%dx%dx%d\n", copy_error, src_name, src_target, src_origin.level, src_origin.x, sw, dst_name, dst_target, dst_origin.level, dst_origin.x, dw, region.width, region.height, region.depth);
+        }
+#else // PS5
+#endif // PS5
     }
 }
 

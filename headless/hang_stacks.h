@@ -24,8 +24,9 @@
 #include <mutex>
 #include <thread>
 
-extern const char __eden_text_start[];
-extern const char __eden_text_end[];
+// The app's code, from the console link (tools/unwind.ld); weak: host tests link without it.
+extern const char __eden_text_start[] __attribute__((weak));
+extern const char __eden_text_end[] __attribute__((weak));
 
 namespace Eden::HangStacks {
 struct Slot {
@@ -73,7 +74,7 @@ inline void OnSignal(int, siginfo_t*, void* context) {
 
 inline void Report(double seconds) {
     const auto code = reinterpret_cast<std::uintptr_t>(__eden_text_start);
-    const auto code_end = reinterpret_cast<std::uintptr_t>(__eden_text_end);
+    const auto code_end = __eden_text_end ? reinterpret_cast<std::uintptr_t>(__eden_text_end) : ~std::uintptr_t{0};
     const unsigned count = slot_count.load(std::memory_order_acquire);
     std::fprintf(stderr, "EDEN_HANG no heartbeat for %.0f s; stacks of %u named threads follow\n", seconds, count);
     for (unsigned i = 0; i < count; ++i) {

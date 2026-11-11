@@ -1,3 +1,4 @@
+extern "C" bool eden_light_dmb;  // fast_paths.cmake
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -696,7 +697,13 @@ void A32EmitX64::EmitA32DataSynchronizationBarrier(A32EmitContext&, IR::Inst*) {
 }
 
 void A32EmitX64::EmitA32DataMemoryBarrier(A32EmitContext&, IR::Inst*) {
-    code.mfence();
+    // fast_paths.cmake: a locked RMW of the block's own spill slot is a full fence.
+    if (__atomic_load_n(&eden_light_dmb, __ATOMIC_RELAXED)) {
+        code.lock();
+        code.or_(code.dword[rsp], 0);
+    } else {
+        code.mfence();
+    }
 }
 
 void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, IR::Inst*) {
@@ -1322,9 +1329,8 @@ void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
 void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.DisableWriting();
+        // Prelude occupies separate RX pages throughout guest-code patching.
         (*fast_dispatch_table_lookup)(location.Value()) = {};
-        code.EnableWriting();
     }
 }
 

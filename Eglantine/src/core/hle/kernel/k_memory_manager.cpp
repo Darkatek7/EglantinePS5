@@ -1,3 +1,6 @@
+#include <cstddef>
+#include <cstdint>
+namespace Common { void CommitGuestMemoryOnHandOut(std::uint64_t offset, std::size_t bytes) noexcept; void FillGuestMemory(std::uint8_t* at, int fill, std::size_t bytes) noexcept; }
 // SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -236,6 +239,7 @@ KPhysicalAddress KMemoryManager::AllocateAndOpenContinuous(size_t num_pages, siz
     if (allocated_block == 0) {
         return 0;
     }
+    ::Common::CommitGuestMemoryOnHandOut(GetInteger(allocated_block) - Core::DramMemoryMap::Base, num_pages * PageSize);
 
     // Maintain the optimized memory bitmap, if we should.
     if (m_has_optimized_process[static_cast<size_t>(pool)]) {
@@ -287,6 +291,7 @@ Result KMemoryManager::AllocatePageGroupImpl(KPageGroup* out, size_t num_pages, 
                 if (allocated_block == 0) {
                     break;
                 }
+                ::Common::CommitGuestMemoryOnHandOut(GetInteger(allocated_block) - Core::DramMemoryMap::Base, pages_per_alloc * PageSize);
 
                 // Ensure we don't leak the block if we fail.
                 ON_RESULT_FAILURE_2 {

@@ -79,10 +79,10 @@ public:
             arg = this->GetPostDestroyArgument();
             this->Finalize(kernel);
         }
-        Free(kernel, static_cast<Derived*>(this));
         if (is_initialized) {
             Derived::PostDestroy(kernel, arg);
         }
+        Free(kernel, static_cast<Derived*>(this));
     }
 
     virtual bool IsInitialized() const {
@@ -155,10 +155,10 @@ public:
             arg = this->GetPostDestroyArgument();
             this->Finalize(kernel);
         }
-        Free(kernel, static_cast<Derived*>(this));
         if (is_initialized) {
             Derived::PostDestroy(kernel, arg);
         }
+        Free(kernel, static_cast<Derived*>(this));
     }
 
     virtual bool IsInitialized() const {

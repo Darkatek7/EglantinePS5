@@ -1,3 +1,15 @@
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include "core/device_memory.h"
+namespace Common { void CommitGuestMemory(std::uint64_t offset, std::size_t bytes) noexcept; }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <string>
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -90,6 +102,7 @@ struct KernelCore::Impl {
     }
 
     void Initialize(KernelCore& kernel) {
+        services_closing = false;
         hardware_timer.emplace(kernel);
         hardware_timer->Initialize();
 
@@ -99,6 +112,12 @@ struct KernelCore::Impl {
         // Derive the initial memory layout from the emulated board
         Init::InitializeSlabResourceCounts(kernel);
         DeriveInitialMemoryLayout();
+        for (const auto& region : memory_layout->GetPhysicalMemoryRegionTree()) {
+            const u64 dram = Core::DramMemoryMap::Base;
+            if (region.IsDerivedFrom(KMemoryRegionType_DramUserPool) || region.GetLastAddress() < dram) continue;
+            const u64 start = std::max<u64>(region.GetAddress(), dram);
+            ::Common::CommitGuestMemory(start - dram, region.GetLastAddress() - start + 1);
+        }
         Init::InitializeSlabHeaps(system, *memory_layout);
 
         // Initialize kernel memory and resources.
@@ -131,6 +150,28 @@ struct KernelCore::Impl {
     }
 
     void Shutdown(KernelCore& kernel) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        auto eden_last = std::chrono::steady_clock::now();
+        const auto eden_mark = [&eden_last](const char* step) {
+            const auto now = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - eden_last).count();
+            if (ms >= 20.0) std::fprintf(stderr, "EDEN_SHUTDOWN_KERNEL step=%s ms=%.1f\n", step, ms);
+            eden_last = std::chrono::steady_clock::now();
+        };
+        {
+            const auto probe = std::chrono::steady_clock::now();
+            for (int line = 0; line < 20; ++line) std::fprintf(stderr, "EDEN_SHUTDOWN_WRITE_PROBE line=%d\n", line);
+            std::fprintf(stderr, "EDEN_SHUTDOWN_WRITE_PROBE lines=20 ms=%.1f\n",
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe).count());
+            eden_last = std::chrono::steady_clock::now();
+        }
+#else // PS5
+#endif // PS5
+        worker_task_manager.WaitForRequests();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("worker_tasks");
+#else // PS5
+#endif // PS5
         is_shutting_down.store(true, std::memory_order_relaxed);
         SCOPE_EXIT {
             is_shutting_down.store(false, std::memory_order_relaxed);
@@ -175,6 +216,10 @@ struct KernelCore::Impl {
         CleanupObject(time_shared_mem);
         CleanupObject(hidbus_shared_mem);
         CleanupObject(system_resource_limit);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("persistent_objects");
+#else // PS5
+#endif // PS5
 
         for (u32 core_id = 0; core_id < Core::Hardware::NUM_CPU_CORES; core_id++) {
             if (shutdown_threads[core_id]) {
@@ -184,6 +229,10 @@ struct KernelCore::Impl {
 
             schedulers[core_id].reset();
         }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("schedulers");
+#else // PS5
+#endif // PS5
 
         // Next host thead ID to use, IDs below NUM_CPU_CORES represent core threads, the rest others
         next_host_thread_id = Core::Hardware::NUM_CPU_CORES;
@@ -198,6 +247,10 @@ struct KernelCore::Impl {
                 registered_in_use_objects.clear();
             }
         }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("in_use_objects");
+#else // PS5
+#endif // PS5
 
         // Track kernel objects that were not freed on shutdown
         {
@@ -214,15 +267,100 @@ struct KernelCore::Impl {
         // Ensure that the object list container is finalized and properly shutdown.
         global_object_list_container->Finalize();
         global_object_list_container.reset();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("object_container");
+#else // PS5
+#endif // PS5
 
         hardware_timer->Finalize();
         hardware_timer.reset();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        eden_mark("hardware_timer");
+#else // PS5
+#endif // PS5
     }
 
     void CloseServices() {
         // Ensures all servers gracefully shutdown.
-        std::scoped_lock lk{server_lock};
-        server_managers.clear();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        using EdenClock = std::chrono::steady_clock;
+        const auto eden_ms = [](EdenClock::time_point from) {
+            return std::chrono::duration<double, std::milli>(EdenClock::now() - from).count();
+        };
+        const auto eden_start = EdenClock::now();
+#else // PS5
+#endif // PS5
+        decltype(server_managers) closing_managers;
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        decltype(server_names) closing_names;
+#else // PS5
+#endif // PS5
+        {
+            std::scoped_lock lk{server_lock};
+            services_closing = true;
+            closing_managers.swap(server_managers);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+            closing_names.swap(server_names);
+#else // PS5
+#endif // PS5
+        }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        const double eden_lock_ms = eden_ms(eden_start);
+        const size_t eden_count = closing_managers.size();
+        auto eden_phase = EdenClock::now();
+        double eden_stop_worst = 0;
+        for (auto& manager : closing_managers) {
+            const auto eden_one = EdenClock::now();
+            manager->RequestStop();
+            eden_stop_worst = std::max(eden_stop_worst, eden_ms(eden_one));
+        }
+        const double eden_stop_ms = eden_ms(eden_phase);
+        eden_phase = EdenClock::now();
+        double eden_worst = 0;
+        for (size_t i = 0; i < closing_managers.size(); ++i) {
+            const auto eden_one = EdenClock::now();
+            closing_managers[i].reset();
+            const double ms = eden_ms(eden_one);
+            eden_worst = std::max(eden_worst, ms);
+            if (ms >= 20.0) {
+                std::fprintf(stderr, "EDEN_SHUTDOWN_MANAGER index=%zu name=%s ms=%.1f\n", i,
+                             i < closing_names.size() ? closing_names[i].c_str() : "?", ms);
+            }
+        }
+#else // PS5
+        for (auto& manager : closing_managers) manager->RequestStop();
+#endif // PS5
+        closing_managers.clear();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        const double eden_destroy_ms = eden_ms(eden_phase);
+        eden_phase = EdenClock::now();
+        double eden_wait_worst = 0;
+        const size_t eden_threads = service_threads.size();
+#else // PS5
+#endif // PS5
+        for (auto* thread : service_threads) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+            const auto eden_one = EdenClock::now();
+#else // PS5
+#endif // PS5
+            s32 index;
+            KSynchronizationObject* objects[] = {thread};
+            ASSERT(KSynchronizationObject::Wait(system.Kernel(), &index, objects, 1, -1).IsSuccess());
+            thread->Close(system.Kernel());
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+            eden_wait_worst = std::max(eden_wait_worst, eden_ms(eden_one));
+#else // PS5
+#endif // PS5
+        }
+        service_threads.clear();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        std::fprintf(stderr, "EDEN_SHUTDOWN_SERVICES managers=%zu threads=%zu lock_ms=%.1f stop_ms=%.1f "
+                     "worst_stop_ms=%.1f destroy_ms=%.1f worst_manager_ms=%.1f wait_ms=%.1f "
+                     "worst_wait_ms=%.1f total_ms=%.1f\n", eden_count, eden_threads, eden_lock_ms,
+                     eden_stop_ms, eden_stop_worst, eden_destroy_ms, eden_worst, eden_ms(eden_phase),
+                     eden_wait_worst, eden_ms(eden_start));
+#else // PS5
+#endif // PS5
     }
 
     void InitializePhysicalCores() {
@@ -235,11 +373,13 @@ struct KernelCore::Impl {
             main_thread->SetCurrentCore(core);
             ASSERT(Kernel::KThread::InitializeMainThread(system, main_thread, core).IsSuccess());
             KThread::Register(system.Kernel(), main_thread);
+            system.Kernel().RegisterInUseObject(main_thread);
 
             auto* idle_thread{Kernel::KThread::Create(system.Kernel())};
             idle_thread->SetCurrentCore(core);
             ASSERT(Kernel::KThread::InitializeIdleThread(system, idle_thread, core).IsSuccess());
             KThread::Register(system.Kernel(), idle_thread);
+            system.Kernel().RegisterInUseObject(idle_thread);
 
             schedulers[i]->Initialize(system.Kernel(), main_thread, idle_thread, core);
         }
@@ -810,6 +950,12 @@ struct KernelCore::Impl {
     ::Common::unordered_set<KAutoObject*> registered_objects;
     ::Common::unordered_set<KAutoObject*> registered_in_use_objects;
 
+    std::vector<KThread*> service_threads;
+    bool services_closing = false;
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    std::vector<std::string> server_names;
+#else // PS5
+#endif // PS5
     std::mutex server_lock;
     std::vector<std::unique_ptr<Service::ServerManager>> server_managers;
 
@@ -1020,13 +1166,12 @@ void KernelCore::RunServer(std::unique_ptr<Service::ServerManager>&& server_mana
 
     {
         std::scoped_lock lk{impl->server_lock};
-        if (impl->is_shutting_down) {
-            return;
+        if (!impl->services_closing && !impl->is_shutting_down) {
+            impl->server_managers.emplace_back(std::move(server_manager));
         }
-
-        impl->server_managers.emplace_back(std::move(server_manager));
     }
 
+    if (server_manager) manager->RequestStop();
     manager->LoopProcess();
 }
 
@@ -1150,6 +1295,7 @@ void KernelCore::RunOnGuestCoreProcess(std::string&& process_name, std::function
     KThread::Register(*this, thread);
 
     // Begin running the thread.
+    impl->service_threads.push_back(thread);
     ASSERT(R_SUCCEEDED(thread->Run(*this)));
 }
 
@@ -1273,8 +1419,10 @@ void KernelCore::SuspendEmulation(bool suspended) {
 void KernelCore::ShutdownCores() {
     impl->TerminateAllProcesses();
     KScopedSchedulerLock lk{*this};
-    for (auto* thread : impl->shutdown_threads)
-        void(thread->Run(*this));
+    for (auto* thread : impl->shutdown_threads) {
+        ASSERT(thread->Run(*this).IsSuccess());
+        thread->Close(*this);
+    }
 }
 
 bool KernelCore::IsMulticore() const {

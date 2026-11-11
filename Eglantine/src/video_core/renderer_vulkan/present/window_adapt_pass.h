@@ -35,7 +35,7 @@ public:
 
     void Draw(const Device& device, RasterizerVulkan& rasterizer, Scheduler& scheduler, size_t image_index,
               std::list<Layer>& layers, std::span<const Tegra::FramebufferConfig> configs,
-              const Layout::FramebufferLayout& layout, Frame* dst);
+              const Layout::FramebufferLayout& layout, Frame* dst, bool draw_hud = false);
 
     VkDescriptorSetLayout GetDescriptorSetLayout();
     VkRenderPass GetRenderPass();
@@ -56,6 +56,8 @@ private:
     vk::Pipeline opaque_pipeline;
     vk::Pipeline premultiplied_pipeline;
     vk::Pipeline coverage_pipeline;
+    vk::PipelineLayout hud_layout;
+    vk::Pipeline hud_pipeline;
 };
 
 } // namespace Vulkan

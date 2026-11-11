@@ -1,3 +1,4 @@
+#include <cstdint>
 // SPDX-FileCopyrightText: 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -11,6 +12,11 @@
 #include "common/multi_level_page_table.h"
 
 namespace Common {
+#if defined(__PROSPERO__) // PS5
+void* AllocateSparsePages(std::size_t size) noexcept;
+void FreeSparsePages(void* base, std::size_t size) noexcept;
+void CommitSparsePage(std::uintptr_t page) noexcept;
+#endif // PS5
 
 template <typename BaseAddr>
 MultiLevelPageTable<BaseAddr>::MultiLevelPageTable(std::size_t address_space_bits_, std::size_t first_level_bits_, std::size_t page_bits_)
@@ -29,9 +35,15 @@ MultiLevelPageTable<BaseAddr>::MultiLevelPageTable(std::size_t address_space_bit
 #ifdef _WIN32
     void* base{VirtualAlloc(nullptr, alloc_size, MEM_RESERVE, PAGE_READWRITE)};
 #else
+#if defined(__PROSPERO__) // PS5
+    // The PS5's anonymous mappings come out of the small flexible pool: reserve the table like the
+    // other large ones, sparse (src/memory_pages.cpp), and commit chunks as they are reserved.
+    void* base{AllocateSparsePages(alloc_size)};
+#else // not PS5
     void* base{mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)};
     if (base == MAP_FAILED)
         base = nullptr;
+#endif // PS5
 #endif
     ASSERT(base);
     base_ptr = reinterpret_cast<BaseAddr*>(base);
@@ -45,7 +57,11 @@ MultiLevelPageTable<BaseAddr>::~MultiLevelPageTable() noexcept {
 #ifdef _WIN32
     ASSERT(VirtualFree(base_ptr, 0, MEM_RELEASE));
 #else
+#if defined(__PROSPERO__) // PS5
+    FreeSparsePages(base_ptr, alloc_size);
+#else // not PS5
     ASSERT(munmap(base_ptr, alloc_size) == 0);
+#endif // PS5
 #endif
 }
 
@@ -69,6 +85,14 @@ void MultiLevelPageTable<BaseAddr>::AllocateLevel(u64 index) {
     ASSERT(base);
 #else
     void* base = ptr;
+#if defined(__PROSPERO__) // PS5
+    // The chunk is written next (MemoryManager::PageTableOp): give its slots memory of their own.
+    const auto chunk_begin = reinterpret_cast<std::uintptr_t>(ptr);
+    const auto chunk_end = chunk_begin + first_level_chunk_size;
+    for (std::uintptr_t page = chunk_begin; page < chunk_end; page += 0x200000)
+        CommitSparsePage(page);
+    CommitSparsePage(chunk_end - 1);
+#endif // PS5
 #endif
     first_level_map[index] = base;
 }

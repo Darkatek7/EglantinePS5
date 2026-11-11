@@ -1,3 +1,17 @@
+#include <bit>
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/watch.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/kernel.h"
+#include "headless/crash_site.h"
+#include "headless/performance.h"
+#elif defined(EDEN_MKW_DIAGNOSTICS) // PS5 Mario Kart diagnostics
+#include "headless/performance.h"
+#include "core/hle/kernel/k_thread.h"
+#else // PS5
+#endif // PS5
+#include <algorithm>
+#include "src/fastmem.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -75,6 +89,10 @@ std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
 }
 
 void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, size)) ::Eden::Watch::Report(vaddr, size, u64(value), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
         switch (size) {
         case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
@@ -86,6 +104,10 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
     }
 }
 void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 16)) ::Eden::Watch::Report(vaddr, 16, u64(value[0]), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
         m_memory.Write64(vaddr, value[0]);
         m_memory.Write64(vaddr + 8, value[1]);
@@ -93,22 +115,42 @@ void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value)
 }
 
 bool DynarmicCallbacks64::MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 1)) ::Eden::Watch::Report(vaddr, 1, u64(value), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive8(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 2)) ::Eden::Watch::Report(vaddr, 2, u64(value), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive16(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive32(u64 vaddr, std::uint32_t value, std::uint32_t expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 4)) ::Eden::Watch::Report(vaddr, 4, u64(value), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive32(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive64(u64 vaddr, std::uint64_t value, std::uint64_t expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 8)) ::Eden::Watch::Report(vaddr, 8, u64(value), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive64(vaddr, value, expected);
 }
 bool DynarmicCallbacks64::MemoryWriteExclusive128(u64 vaddr, Dynarmic::A64::Vector value, Dynarmic::A64::Vector expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    if (::Eden::Watch::Hit(vaddr, 16)) ::Eden::Watch::Report(vaddr, 16, u64(value[0]), m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive128(vaddr, value, expected);
 }
@@ -208,6 +250,11 @@ void DynarmicCallbacks64::ExceptionRaised(u64 pc, Dynarmic::A64::Exception excep
         return;
     case Dynarmic::A64::Exception::NoExecuteFault:
         LOG_CRITICAL(Core_ARM, "Cannot execute instruction at unmapped address {:#016x}", pc);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        ::Eden::CrashSite::Dump(m_memory, *m_parent.m_jit);
+        ::Eden::CrashSite::DumpThreads("fault", *m_process);
+#else // PS5
+#endif // PS5
         ReturnException(pc, PrefetchAbort);
         return;
     default:
@@ -323,14 +370,24 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_address_space_bits = std::uint32_t(address_space_bits);
         config.silently_mirror_fastmem = false;
 
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
         config.fastmem_exclusive_access = config.fastmem_pointer != std::nullopt;
+#else // PS5
+        config.fastmem_exclusive_access = true;
+#endif // PS5
         config.recompile_on_exclusive_fastmem_failure = true;
 
         if (reinterpret_cast<u64>(m_system.DeviceMemory().buffer.BackingBasePointer() +
             Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize()) < (1ULL << 39)) {
             // Systems like FreeBSD allocate memory really low by default, and since we pack our page table entries,
             // we have to manually sign extend when our actual pointer is negative.
-            config.page_table_sign_extension = std::uint8_t(Common::PageTable::SIGN_BIT);
+            config.page_table_sign_extension = std::uint8_t(std::countl_zero(Common::PageTable::ATTRIBUTE_MASK));
+        }
+        if (void* const direct = page_table->DirectTable()) {
+            config.page_table = reinterpret_cast<decltype(config.page_table)>(direct);
+            config.page_table_pointer_mask = 0;
+            config.page_table_marked_bit = std::nullopt;
+            config.page_table_sign_extension = std::nullopt;
         }
     }
 
@@ -358,7 +415,11 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
 #if defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
     config.code_cache_size = std::uint32_t(128_MiB);
 #else
-    config.code_cache_size = std::uint32_t(512_MiB);
+#if !defined(__PROSPERO__) // not PS5
+    config.code_cache_size = std::uint32_t(16_MiB);
+#else // PS5
+    config.code_cache_size = std::uint32_t(m_cb->m_process->IsSwitch2() ? (m_core_index == 0 ? 160_MiB : m_core_index == 1 ? 144_MiB : m_core_index < 6 ? 96_MiB : 16_MiB) : (m_core_index == 0 ? 256_MiB : m_core_index < 3 ? 192_MiB : 128_MiB));
+#endif // PS5
 #endif
 
     // Allow memory fault handling to work
@@ -418,7 +479,10 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.unsafe_optimizations = true;
         if (!Settings::values.cpuopt_unsafe_host_mmu) {
             config.fastmem_pointer = std::nullopt;
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
             config.fastmem_exclusive_access = false;
+#else // PS5
+#endif // PS5
         }
         if (Settings::values.cpuopt_unsafe_unfuse_fma) {
             config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA;
@@ -454,14 +518,41 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
     }
     if (!Settings::IsFastmemEnabled()) {
         config.fastmem_pointer = std::nullopt;
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
         config.fastmem_exclusive_access = false;
+#else // PS5
+#endif // PS5
     }
+    if (config.fastmem_pointer && ::Eden::Fastmem::Window64Base() != 0 &&
+        *config.fastmem_pointer == ::Eden::Fastmem::Window64Base())
+        config.fastmem_address_space_bits = std::min<std::uint32_t>(config.fastmem_address_space_bits, ::Eden::Fastmem::Window64Bits);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    std::printf("EDEN_DEV_JIT bits=64 core=%zu cache=%u\n", m_core_index, config.code_cache_size);
+#else // PS5
+#endif // PS5
     m_jit.emplace(config);
 }
 
 HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
     m_jit->ClearExclusiveState();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto guest_tid = thread ? thread->GetThreadId() : 0;
+    ::Eden::Performance::NoteRunning(guest_tid, ::Eden::Performance::NowNs());
+    const auto halt = m_jit->Run();
+    ::Eden::Performance::SampleCpu(m_core_index, guest_tid, m_jit->GetPC(), GetSvcNumber(), m_jit->GetFpcr());
+    return TranslateHaltReason(halt);
+#elif defined(EDEN_MKW_DIAGNOSTICS) // PS5 Mario Kart diagnostics
+    const auto mkw_tid = thread ? thread->GetThreadId() : 0;
+    ::Eden::Performance::NoteRunning(mkw_tid, ::Eden::Performance::NowNs());
+    ::Eden::Performance::Timer mkw_run_timer(::Eden::Performance::mkw_guest_run[mkw_tid < 512 ? mkw_tid : 511]);
+    const auto mkw_start = ::Eden::Performance::NowNs();
+    const auto mkw_halt = m_jit->Run();
+    ::Eden::Performance::MkwRecordRunExit(mkw_tid, m_jit->GetPC(), ::Eden::Performance::NowNs() - mkw_start);
+    ::Eden::Performance::MkwSlowRun(mkw_tid, ::Eden::Performance::NowNs(), ::Eden::Performance::NowNs() - mkw_start, static_cast<unsigned>(mkw_halt), *m_jit, m_cb->m_memory);
+    return TranslateHaltReason(mkw_halt);
+#else // PS5
     return TranslateHaltReason(m_jit->Run());
+#endif // PS5
 }
 
 HaltReason ArmDynarmic64::StepThread(Kernel::KThread* thread) {

@@ -46,6 +46,16 @@ struct PageTable {
     /// Masks out bits reserved for attribute tagging.
     static constexpr u64 ATTRIBUTE_MASK = ((1ULL << 44) - 1) << 12;
 
+    /// The JIT's direct table (headless/jit-page-table.cmake) starts this many bytes
+    /// after the entries: 1 GiB, the entries of a 39-bit address space.
+    static constexpr std::size_t DIRECT_TABLE_OFFSET = std::size_t{1} << 30;
+    /// Whether process page tables keep a direct table: -1 until the first table is sized, then
+    /// fixed for the session (every PageEntryData write relies on it).
+    static inline std::atomic<int> direct_tables{-1};
+    /// On unless EDEN_JIT_TABLE=0 (env.txt), read when the first table is sized.
+    static inline std::atomic<bool> direct_tables_requested{true};
+    static bool DirectTables() noexcept;
+
     /// Specifies sign bit for page table entries.
     static constexpr u64 SIGN_BIT = 45 + 12; // 44 bits of data + page offset
 
@@ -107,12 +117,19 @@ struct PageTable {
             return {ExtractPointer(non_atomic_raw, ignore_marked), static_cast<PageType>(non_atomic_raw.type), ExtractBlock(non_atomic_raw)};
         }
 
-        /// Write page info atomically
-        inline void Store(bool marked, PageType type, u16 block, uintptr_t pointer) noexcept {
-            data_raw.store(std::bit_cast<u64>(Data{marked, type, block, pointer}));
+        /// Write page info atomically, and the JIT's direct value: before the entry when the page
+        /// becomes slow, after it when it becomes fast.
+        void Store(bool marked, PageType type, u16 block, uintptr_t pointer) noexcept {
+            const Data data{marked, type, block, pointer};
+            const uintptr_t direct = ExtractPointer(data);
+            const bool mirrored = direct_tables.load(std::memory_order_relaxed) == 1;
+            if (mirrored && direct == 0) Direct().store(0, std::memory_order_relaxed);
+            data_raw.store(std::bit_cast<u64>(data));
+            if (mirrored && direct != 0) Direct().store(direct, std::memory_order_relaxed);
         }
 
-        inline void MarkRasterizerCached() noexcept {
+        void MarkRasterizerCached() noexcept {
+            if (direct_tables.load(std::memory_order_relaxed) == 1) Direct().store(0, std::memory_order_relaxed);
             data_raw.fetch_or(0b111);
         }
 
@@ -132,6 +149,9 @@ struct PageTable {
         }
 
     private:
+        std::atomic<u64>& Direct() noexcept {
+            return *reinterpret_cast<std::atomic<u64>*>(reinterpret_cast<char*>(&data_raw) + DIRECT_TABLE_OFFSET);
+        }
         std::atomic<u64> data_raw;
         static_assert(sizeof(Data) == sizeof(std::atomic<u64>));
     };
@@ -155,6 +175,11 @@ struct PageTable {
 
     std::size_t GetAddressSpaceBits() const {
         return current_address_space_width_in_bits;
+    }
+
+    /// The JIT's direct table, or null when this table has none.
+    void* DirectTable() noexcept {
+        return entries.mirror_index ? const_cast<PageEntryData*>(entries.data()) + entries.mirror_index : nullptr;
     }
 
     /// Vector of memory pointers backing each page. An entry can only be non-null if the

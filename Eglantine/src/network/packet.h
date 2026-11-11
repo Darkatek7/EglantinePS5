@@ -4,7 +4,9 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
+#include <utility>
 #include "common/common_types.h"
 
 namespace Network {
@@ -121,13 +123,19 @@ Packet& Packet::Read(std::vector<T>& out_data) {
     // First extract the size
     u32 size = 0;
     Read(size);
-    out_data.resize(size);
-
-    // Then extract the data
-    for (std::size_t i = 0; i < out_data.size(); ++i) {
-        T character;
-        Read(character);
-        out_data[i] = character;
+    out_data.clear();
+    // Every supported element consumes at least one byte. Do not allocate from an
+    // unchecked count, including for vectors of variable-length strings.
+    if (!CheckSize(size)) {
+        return *this;
+    }
+    for (u32 i = 0; i < size; ++i) {
+        T value{};
+        if (!Read(value)) {
+            out_data.clear();
+            return *this;
+        }
+        out_data.push_back(std::move(value));
     }
     return *this;
 }
@@ -135,7 +143,7 @@ Packet& Packet::Read(std::vector<T>& out_data) {
 template <typename T, std::size_t S>
 Packet& Packet::Read(std::array<T, S>& out_data) {
     for (std::size_t i = 0; i < out_data.size(); ++i) {
-        T character;
+        T character{};
         Read(character);
         out_data[i] = character;
     }

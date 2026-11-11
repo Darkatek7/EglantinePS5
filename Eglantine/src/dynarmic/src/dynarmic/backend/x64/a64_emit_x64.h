@@ -19,6 +19,7 @@
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a64_jitstate.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/backend/x64/jit_group.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
 #include "dynarmic/interface/A64/a64.h"
@@ -48,7 +49,7 @@ public:
 
     /// Emit host machine code for a basic block with intermediate representation `block`.
     /// @note block is modified.
-    BlockDescriptor Emit(IR::Block& block) noexcept;
+    BlockDescriptor Emit(IR::Block& block, bool publish = true) noexcept;
 
     void ClearCache() override;
 
@@ -136,6 +137,12 @@ public:
     const void* terminal_handler_fast_dispatch_hint = nullptr;
     FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
     A64::Jit* jit_interface = nullptr;
+    // EglantinePS5: the process's shared blocks (the JIT sets it), and the guest range and
+    // unlinked branch sites of the last Emit, registered by the JIT.
+    JitGroup* eden_group = nullptr;
+    u64 eden_range_first = 0;
+    u64 eden_range_last = 0;
+    std::vector<JitGroup::PendingSite> eden_pending_sites;
     void (*memory_read_128)() = nullptr;
     void (*memory_write_128)() = nullptr;
     void (*memory_exclusive_write_128)() = nullptr;

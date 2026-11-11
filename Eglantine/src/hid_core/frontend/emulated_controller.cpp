@@ -1,3 +1,4 @@
+#include <string>
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -188,6 +189,11 @@ void EmulatedController::LoadDevices() {
 
     output_params[LeftIndex] = left_joycon;
     output_params[RightIndex] = right_joycon;
+    if (output_params[LeftIndex].Get("engine", "").empty()) {
+        const auto rumble_port = std::to_string(Service::HID::NpadIdTypeToIndex(npad_id_type));
+        output_params[LeftIndex] = Common::ParamPackage{"engine:virtual_gamepad,port:" + rumble_port + ",pad:1"};
+        output_params[RightIndex] = Common::ParamPackage{"engine:virtual_gamepad,port:" + rumble_port + ",pad:2"};
+    }
     output_params[2] = camera_params[1];
     output_params[3] = nfc_params[0];
     output_params[4] = android_params;

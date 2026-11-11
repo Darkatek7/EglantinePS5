@@ -5,6 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdio>
+#include <unordered_set>
+#include "performance.h"
+#include "dev_vulkan.h"
+#include "diagnostics.h"
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -38,6 +43,12 @@
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/dirty_flags.h"
+#include <atomic>
+#include <mutex>
+#include <set>
+#include <unordered_set>
+#include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
@@ -395,7 +406,7 @@ vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& p
     const auto code =
         EmitPipelineShader(profile, runtime_info, program, binding, shader_hash, reference);
     device.SaveShader(code);
-    vk::ShaderModule module{BuildShader(device, code)};
+    vk::ShaderModule module{([&] { auto cost = Eden::Performance::VulkanTimer(23); return BuildShader(device, code); }())};
 
     // Text log + .spv dump. Text log is gated by gpu_log_level != Off; .spv dump
     // is independent and gated only by gpu_log_shader_dumps.
@@ -429,7 +440,7 @@ vk::ShaderModule EmitComputeModule(const Device& device, const Shader::Profile& 
                                    std::span<const u32> reference = {}) {
     const std::vector<u32> code{EmitComputeShader(profile, program, shader_hash, reference)};
     device.SaveShader(code);
-    vk::ShaderModule spv_module{BuildShader(device, code)};
+    vk::ShaderModule spv_module{([&] { auto cost = Eden::Performance::VulkanTimer(23); return BuildShader(device, code); }())};
 
     // Text log + .spv dump. Same split as the graphics path.
     const bool should_log = GPU::Logging::IsActive();
@@ -861,6 +872,48 @@ void PipelineCache::SaveUsedPipelines() {
                               VideoCommon::ShaderCacheV2::EncodeUsed(record));
 }
 
+namespace {
+std::mutex eden_attributeless_mutex;
+using EdenVertexIdentity = std::array<u64, 2>;
+std::set<EdenVertexIdentity> eden_attributeless_vertex;
+std::atomic<u32> eden_attributeless_generation{0};
+bool eden_static_vertex_input_bound = false;
+
+void EdenRecordAttributeless(EdenVertexIdentity vertex_hash, const Shader::Info& info) {
+    for (size_t index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+        if (info.loads.Generic(index)) {
+            return;
+        }
+    }
+    std::scoped_lock lock{eden_attributeless_mutex};
+    if (eden_attributeless_vertex.insert(vertex_hash).second) {
+        eden_attributeless_generation.fetch_add(1, std::memory_order_release);
+    }
+}
+
+// GPU thread: whether the vertex shader reads no attribute, as far as built pipelines tell.
+bool EdenAttributeless(EdenVertexIdentity vertex_hash) {
+    static EdenVertexIdentity last_hash{};
+    static u32 last_generation = ~0u;
+    static bool last_result = false;
+    const u32 generation = eden_attributeless_generation.load(std::memory_order_acquire);
+    if (vertex_hash != last_hash || generation != last_generation) {
+        std::scoped_lock lock{eden_attributeless_mutex};
+        last_hash = vertex_hash;
+        last_generation = generation;
+        last_result = eden_attributeless_vertex.contains(vertex_hash);
+    }
+    return last_result;
+}
+
+// A static key without attributes (what the loader takes back from the disk cache).
+bool EdenAttributelessStaticKey(const FixedPipelineState& state) {
+    return state.dynamic_vertex_input == 0 &&
+           std::ranges::none_of(state.attributes,
+                                [](const auto& attribute) { return attribute.raw != 0; });
+}
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 
     if (!RefreshStages(graphics_key.unique_hashes)) {
@@ -868,6 +921,37 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         return nullptr;
     }
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
+    const bool static_vertex_input = graphics_key.state.dynamic_vertex_input != 0 &&
+                                     ::Eden::DevVulkan::static_vertex_input &&
+                                     EdenAttributeless({graphics_key.unique_hashes[0], graphics_key.unique_hashes[1]});
+    if (static_vertex_input) {
+        // Instance-rate streams as the registers set them (with every stream per vertex the
+        // driver drew these wrong too); no attribute, so the key does not depend on what the
+        // registers hold for attributes the shader does not read.
+        const auto& regs = maxwell3d->regs;
+        graphics_key.state.dynamic_vertex_input.Assign(0);
+        graphics_key.state.enabled_divisors = 0;
+        graphics_key.state.attributes = {};
+        graphics_key.state.binding_divisors = {};
+        for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+            const bool is_enabled = regs.vertex_stream_instances.IsInstancingEnabled(index);
+            graphics_key.state.binding_divisors[index] =
+                is_enabled ? regs.vertex_streams[index].frequency : 0;
+            graphics_key.state.enabled_divisors |= (is_enabled ? u64{1} : 0) << index;
+        }
+        // The union's attribute_types now holds divisors: the next dynamic draw recomputes them
+        // and sets its vertex input again (a static pipeline replaced it).
+        maxwell3d->dirty.flags[Dirty::VertexInput] = true;
+    }
+    if (static_vertex_input && !eden_static_vertex_input_bound) {
+        // Rebind the vertex buffers with their strides, dynamic state of the static pipeline.
+        auto& flags = maxwell3d->dirty.flags;
+        flags[VideoCommon::Dirty::VertexBuffers] = true;
+        for (size_t index = 0; index < Maxwell::NumVertexArrays; ++index) {
+            flags[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+        }
+    }
+    eden_static_vertex_input_bound = static_vertex_input;
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
@@ -1998,6 +2082,19 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     }
     current_pipeline = pipeline.get();
     current_pipeline->MarkUsed(frame_count);
+    if (::Eden::DevVulkan::trace_pipelines) {
+        static std::unordered_set<const void*> traced;
+        if (traced.insert(current_pipeline).second) {
+            const auto& h = graphics_key.unique_hashes;
+            char text[256];
+            std::snprintf(text, sizeof(text), "G%zu p=%p new=%d va=%llx vb=%llx tc=%llx te=%llx gs=%llx fs=%llx",
+                          traced.size(), (const void*)current_pipeline, int(is_new), (unsigned long long)h[0], (unsigned long long)h[1],
+                          (unsigned long long)h[2], (unsigned long long)h[3], (unsigned long long)h[4],
+                          (unsigned long long)h[5]);
+            ::Eden::Report("pipeline", text);
+            LOG_INFO(Render_Vulkan, "EDEN_PIPELINE_FIRST_USE {}", text);
+        }
+    }
     return BuiltPipeline(current_pipeline);
 }
 
@@ -2274,7 +2371,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             }
             const u32 cfg_offset{
                 static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
-            Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+            auto cfg_cost = Eden::Performance::VulkanTimer(20);
+        Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+        cfg_cost.reset();
             return TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
         };
         if (!uses_vertex_a || index != 1) {
@@ -2478,6 +2577,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         ir_reservation = queued_ir.TryReserve(deferred_ir_bytes);
     }
     const bool defer_emission = ir_reservation != nullptr;
+    if (uses_vertex_b) {
+        EdenRecordAttributeless({key.unique_hashes[0], key.unique_hashes[1]}, programs[1].info);
+    }
     std::array<const Shader::Info*, Maxwell::MaxShaderStage> infos{};
     std::array<vk::ShaderModule, Maxwell::MaxShaderStage> modules;
     std::array<std::optional<Shader::RuntimeInfo>, Maxwell::MaxShaderStage> deferred_runtime_infos;
@@ -2532,7 +2634,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (defer_emission) {
             deferred_runtime_infos[stage_index] = runtime_info;
             if (VideoCommon::Nx2Perf::Verify()) {
-                reference_spirv[stage_index] = EmitSPIRV(profile, runtime_info, program, binding);
+                reference_spirv[stage_index] = ([&] { auto cost = Eden::Performance::VulkanTimer(22); return EmitSPIRV(profile, runtime_info, program, binding); }());
             }
         } else {
             const auto begin = std::chrono::steady_clock::now();
@@ -2612,7 +2714,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         try {
             // Walks the program for the dump; the one that failed may fail here again, and an
             // exception leaving this handler would end the process.
-            Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+            auto cfg_cost = Eden::Performance::VulkanTimer(20);
+        Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+        cfg_cost.reset();
         } catch (const Shader::Exception&) {
         }
         env.Dump(hash, key.unique_hashes[index]);
@@ -2885,7 +2989,9 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
 
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
 
-    Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
+    auto cfg_cost = Eden::Performance::VulkanTimer(20);
+        Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
+        cfg_cost.reset();
 
     // Dump it before error.
     if (Settings::values.dump_guest_shaders) {

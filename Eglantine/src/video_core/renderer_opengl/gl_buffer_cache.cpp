@@ -212,7 +212,7 @@ void BufferCacheRuntime::Finish() {
 
 void BufferCacheRuntime::ClearBuffer(Buffer& dest_buffer, u32 offset, size_t size, u32 value) {
     glClearNamedBufferSubData(dest_buffer.Handle(), GL_R32UI, static_cast<GLintptr>(offset),
-                              static_cast<GLsizeiptr>(size), GL_RED, GL_UNSIGNED_INT, &value);
+                              static_cast<GLsizeiptr>(size), GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
 }
 
 void BufferCacheRuntime::BindIndexBuffer(Buffer& buffer, u32 offset, u32 size) {

@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <chrono>
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -513,7 +517,11 @@ void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {
     VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Fence);
     u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
     const auto value = regs.semaphore_acquire;
+#if !defined(__PROSPERO__) // not PS5
     while (word != value) {
+#else // PS5
+    while (word != value && !dma_pusher.system.IsShuttingDown()) {
+#endif // PS5
         regs.acquire_active = true;
         regs.acquire_value = value;
         ReleaseFences(dma_pusher);

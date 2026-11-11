@@ -1,3 +1,4 @@
+#include "headless/cheats.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -502,7 +503,7 @@ std::vector<VirtualFile> PatchManager::CollectPatches(const std::vector<VirtualD
             for (const auto& file : exefs_dir->GetFiles()) {
                 if (file->GetExtension() == "ips") {
                     auto name = file->GetName();
-                    const auto this_build_id = fmt::format("{:0<64}", name.substr(0, name.find('.')));
+                    const auto this_build_id = fmt::format("{:0<64}", Common::ToUpper(name.substr(0, name.find('.'))));
                     if (nso_build_id == this_build_id)
                         out.push_back(file);
                 } else if (file->GetExtension() == "pchtxt") {
@@ -549,7 +550,6 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
 
     const auto load_dir = GetModificationLoadRoot();
     if (load_dir == nullptr) {
-        LOG_ERROR(Loader, "Cannot load mods for invalid title_id={:016X}", title_id);
         return nso;
     }
 
@@ -700,7 +700,6 @@ bool PatchManager::HasNSOPatch(const BuildID& build_id_, std::string_view name) 
 
     const auto load_dir = GetModificationLoadRoot();
     if (load_dir == nullptr) {
-        LOG_ERROR(Loader, "Cannot load mods for invalid title_id={:016X}", title_id);
         return false;
     }
 
@@ -714,7 +713,6 @@ bool PatchManager::HasNSOPatch(const BuildID& build_id_, std::string_view name) 
 std::vector<Core::Memory::CheatEntry> PatchManager::CreateCheatList(const BuildID& build_id_) const {
     const auto load_dir = GetModificationLoadRoot();
     if (load_dir == nullptr) {
-        LOG_ERROR(Loader, "Cannot load mods for invalid title_id={:016X}", title_id);
         return {};
     }
 
@@ -728,9 +726,9 @@ std::vector<Core::Memory::CheatEntry> PatchManager::CreateCheatList(const BuildI
         if (std::find(disabled.cbegin(), disabled.cend(), subdir->GetName()) == disabled.cend()) {
             if (auto cheats_dir = FindSubdirectoryCaseless(subdir, "cheats"); cheats_dir != nullptr) {
                 if (auto const res = ReadCheatFileFromFolder(title_id, build_id_, cheats_dir, true))
-                    std::copy(res->begin(), res->end(), std::back_inserter(out));
+                    Eden::Cheats::Append(out, *res, subdir->GetName());
                 if (auto const res = ReadCheatFileFromFolder(title_id, build_id_, cheats_dir, false))
-                    std::copy(res->begin(), res->end(), std::back_inserter(out));
+                    Eden::Cheats::Append(out, *res, subdir->GetName());
             }
         }
     }
@@ -743,7 +741,7 @@ std::vector<Core::Memory::CheatEntry> PatchManager::CreateCheatList(const BuildI
             if (f->Read(data.data(), data.size()) == data.size()) {
                 const Core::Memory::TextCheatParser parser;
                 auto const res = parser.Parse(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
-                std::copy(res.begin(), res.end(), std::back_inserter(out));
+                Eden::Cheats::Append(out, res, name);
             } else {
                 LOG_INFO(Common_Filesystem, "Failed to read cheats file for title_id={:016X}", title_id);
             }

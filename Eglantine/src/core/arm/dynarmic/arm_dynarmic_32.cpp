@@ -1,3 +1,11 @@
+#include <bit>
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#elif defined(EDEN_MKW_DIAGNOSTICS) // PS5 Mario Kart diagnostics
+#include "headless/performance.h"
+#include "core/hle/kernel/k_thread.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -23,6 +31,10 @@ DynarmicCallbacks32::DynarmicCallbacks32(ArmDynarmic32& parent, Kernel::KProcess
 {}
 
 u64 DynarmicCallbacks32::MemoryRead(u32 vaddr, size_t size) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].reads);
+#else // PS5
+#endif // PS5
     CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Read);
     switch (size) {
     case sizeof(u64): return m_memory.Read64(vaddr);
@@ -45,6 +57,10 @@ std::optional<u32> DynarmicCallbacks32::MemoryReadCode(u32 vaddr) {
 }
 
 void DynarmicCallbacks32::MemoryWrite(Dynarmic::A32::VAddr vaddr, u64 value, size_t size) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].writes);
+#else // PS5
+#endif // PS5
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
         switch (size) {
         case sizeof(u64): return m_memory.Write64(vaddr, value);
@@ -56,18 +72,34 @@ void DynarmicCallbacks32::MemoryWrite(Dynarmic::A32::VAddr vaddr, u64 value, siz
     }
 }
 bool DynarmicCallbacks32::MemoryWriteExclusive8(u32 vaddr, u8 value, u8 expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].exclusive_writes);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 1, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive8(vaddr, value, expected);
 }
 bool DynarmicCallbacks32::MemoryWriteExclusive16(u32 vaddr, u16 value, u16 expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].exclusive_writes);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 2, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive16(vaddr, value, expected);
 }
 bool DynarmicCallbacks32::MemoryWriteExclusive32(u32 vaddr, u32 value, u32 expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].exclusive_writes);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 4, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive32(vaddr, value, expected);
 }
 bool DynarmicCallbacks32::MemoryWriteExclusive64(u32 vaddr, u64 value, u64 expected) {
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].exclusive_writes);
+#else // PS5
+#endif // PS5
     return CheckMemoryAccess(vaddr, 8, Kernel::DebugWatchpointType::Write) &&
             m_memory.WriteExclusive64(vaddr, value, expected);
 }
@@ -170,14 +202,24 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
             std::optional<uintptr_t>{uintptr_t(page_table->fastmem_arena)} :
             std::nullopt;
 
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
         config.fastmem_exclusive_access = config.fastmem_pointer  != std::nullopt;
+#else // PS5
+        config.fastmem_exclusive_access = true;
+#endif // PS5
         config.recompile_on_exclusive_fastmem_failure = true;
 
         if (reinterpret_cast<u64>(m_system.DeviceMemory().buffer.BackingBasePointer() +
             Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize()) < (1ULL << 39)) {
             // Systems like FreeBSD allocate memory really low by default, and since we pack our page table entries,
             // we have to manually sign extend when our actual pointer is negative.
-            config.page_table_sign_extension = std::uint8_t(Common::PageTable::SIGN_BIT);
+            config.page_table_sign_extension = std::uint8_t(std::countl_zero(Common::PageTable::ATTRIBUTE_MASK));
+        }
+        if (void* const direct = page_table->DirectTable()) {
+            config.page_table = reinterpret_cast<decltype(config.page_table)>(direct);
+            config.page_table_pointer_mask = 0;
+            config.page_table_marked_bit = std::nullopt;
+            config.page_table_sign_extension = std::nullopt;
         }
     }
 
@@ -193,7 +235,11 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
 #if defined(ARCHITECTURE_arm64) || defined(__sun__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
     config.code_cache_size = std::uint32_t(128_MiB);
 #else
-    config.code_cache_size = std::uint32_t(512_MiB);
+#if !defined(__PROSPERO__) // not PS5
+    config.code_cache_size = std::uint32_t(16_MiB);
+#else // PS5
+    config.code_cache_size = std::uint32_t(m_core_index == 0 ? 512_MiB : m_core_index < 3 ? 64_MiB : 16_MiB);
+#endif // PS5
 #endif
 
     // Allow memory fault handling to work
@@ -253,7 +299,10 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
         config.unsafe_optimizations = true;
         if (!Settings::values.cpuopt_unsafe_host_mmu) {
             config.fastmem_pointer = std::nullopt;
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
             config.fastmem_exclusive_access = false;
+#else // PS5
+#endif // PS5
         }
         if (Settings::values.cpuopt_unsafe_unfuse_fma) {
             config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA;
@@ -290,8 +339,15 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
     }
     if (!Settings::IsFastmemEnabled()) {
         config.fastmem_pointer = std::nullopt;
+#if !defined(EDEN_INLINE_EXCLUSIVES) // PS5 without inline exclusive accesses
         config.fastmem_exclusive_access = false;
+#else // PS5
+#endif // PS5
     }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    std::printf("EDEN_DEV_JIT bits=32 core=%zu cache=%u\n", m_core_index, config.code_cache_size);
+#else // PS5
+#endif // PS5
     m_jit.emplace(config);
 }
 
@@ -324,7 +380,23 @@ bool ArmDynarmic32::IsInThumbMode() const {
 
 HaltReason ArmDynarmic32::RunThread(Kernel::KThread* thread) {
     m_jit->ClearExclusiveState();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto guest_tid = thread ? thread->GetThreadId() : 0;
+    ::Eden::Performance::NoteRunning(guest_tid, ::Eden::Performance::NowNs());
+    const auto halt = m_jit->Run();
+    ::Eden::Performance::SampleCpu(m_core_index, guest_tid, m_jit->Regs()[15], GetSvcNumber(), m_jit->Fpscr());
+    return TranslateHaltReason(halt);
+#elif defined(EDEN_MKW_DIAGNOSTICS) // PS5 Mario Kart diagnostics
+    const auto mkw_tid = thread ? thread->GetThreadId() : 0;
+    ::Eden::Performance::NoteRunning(mkw_tid, ::Eden::Performance::NowNs());
+    ::Eden::Performance::Timer mkw_run_timer(::Eden::Performance::mkw_guest_run[mkw_tid < 512 ? mkw_tid : 511]);
+    const auto mkw_start = ::Eden::Performance::NowNs();
+    const auto mkw_halt = m_jit->Run();
+    ::Eden::Performance::MkwRecordRunExit(mkw_tid, m_jit->Regs()[15], ::Eden::Performance::NowNs() - mkw_start);
+    return TranslateHaltReason(mkw_halt);
+#else // PS5
     return TranslateHaltReason(m_jit->Run());
+#endif // PS5
 }
 
 HaltReason ArmDynarmic32::StepThread(Kernel::KThread* thread) {

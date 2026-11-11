@@ -83,11 +83,10 @@ Inside this repository, in `.deps/`:
   ordinary commits; upstream changes are brought over by hand where we want them
   (`Eglantine/UPSTREAM.md`). The build copies it into its cache (`tools/sync-eden-source.sh`) and
   uses Eden's own hash-pinned packages, which its configure step downloads. The PS5 frontend in
-  `headless/` replaces and derives sources at configure time (`headless/inject.cmake`,
-  `tools/prepare-vulkan-port.py`). Many of those rules were written as text anchors for the older
-  pinned core: the build runs them leniently (`EDEN_PORT_LENIENT`, see `tools/build-package.sh`),
-  skipping the ones that no longer match, and `tools/core-source-checks-pending.txt` lists the
-  release source checks still written for that core.
+  `headless/` builds around it (`headless/inject.cmake`); the PS5 changes to the core itself are
+  written in `Eglantine/`, behind `#if` conditionals where the host's test build or a build switch
+  needs other code (`Eglantine/UPSTREAM.md`). `tools/core-source-checks-pending.txt` lists the
+  release source checks of PS5 changes this core does not have yet.
 - **Catch2** at the core's pinned version/hash, fetched by `tools/check-nx2-core.py`
   into `.local/nx2-core-check` for focused native shader, readback, mapping, command
   synchronization tests. The two full shader-IR integration

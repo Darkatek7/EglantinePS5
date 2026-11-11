@@ -1,3 +1,6 @@
+#include "headless/display_refresh.h"
+#include <thread>
+#include "headless/performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -77,6 +80,17 @@ void Conductor::ProcessVsync() {
     Common::PollThreadPolicies();
     Common::ADPF::SetTargetWorkDuration(std::chrono::nanoseconds{this->GetFramePeriodNs()});
 
+    if (const int compose_delay = ::Eden::Performance::compose_delay_us.load(std::memory_order_relaxed);
+        compose_delay > 0 && m_system.IsMulticore()) {
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            manager.SignalVsync(m_system.Kernel());
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(compose_delay));
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
+        }
+        return;
+    }
     for (auto& [display_id, manager] : m_vsync_managers) {
         m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
         manager.SignalVsync(m_system.Kernel());
@@ -122,6 +136,8 @@ s64 Conductor::GetNextTicks() const {
     }
 
     const f32 effective_fps = 60.f / static_cast<f32>(m_swap_interval);
+    ::Eden::Display::game_millihertz.store(static_cast<int>(effective_fps * 1000.f / speed_scale),
+                                           std::memory_order_relaxed);
     return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));
 }
 

@@ -2,9 +2,10 @@
 """Check generated GPU publication, ordering and cancellation without a consumer."""
 from pathlib import Path
 import subprocess, tempfile
+from eglantine_source import EGLANTINE, source as eglantine_source  # the core, part of this repository
 root=Path(__file__).resolve().parents[1]
 cache=Path((root/'.local/headless-cache').read_text().strip())
-worker=(cache/'native-local/headless/gpu_thread.cpp').read_text()
+worker=eglantine_source('src/video_core/gpu_thread.cpp')
 start=worker.index('u64 ThreadManager::PushCommand(')
 body=worker[start:worker.index('\n} // namespace',start)]
 assert 'state.queue.EmplaceWait(' not in body

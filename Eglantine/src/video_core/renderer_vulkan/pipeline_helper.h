@@ -100,6 +100,8 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
                 .range = entry.address.range,
                 .format = entry.address.format,
             };
+            const VkDescriptorAddressInfoEXT* const buffer_info{
+                entry.address.address != 0 ? &address_info : nullptr};
             VkDescriptorGetInfoEXT get_info{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
                 .pNext = nullptr,
@@ -108,16 +110,16 @@ inline void WriteDescriptorBuffer(const Device& device, const DescriptorBufferLa
             };
             switch (binding.type) {
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-                get_info.data.pUniformBuffer = &address_info;
+                get_info.data.pUniformBuffer = buffer_info;
                 break;
             case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-                get_info.data.pStorageBuffer = &address_info;
+                get_info.data.pStorageBuffer = buffer_info;
                 break;
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-                get_info.data.pUniformTexelBuffer = &address_info;
+                get_info.data.pUniformTexelBuffer = buffer_info;
                 break;
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                get_info.data.pStorageTexelBuffer = &address_info;
+                get_info.data.pStorageTexelBuffer = buffer_info;
                 break;
             case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                 get_info.data.pCombinedImageSampler = &entry.image;

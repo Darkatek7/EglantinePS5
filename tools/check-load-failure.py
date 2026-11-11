@@ -1,8 +1,9 @@
 from pathlib import Path
 import subprocess,tempfile
+from eglantine_source import EGLANTINE, source as eglantine_source  # the core, part of this repository
 r=Path(__file__).resolve().parents[1]
 c=Path((r/'.local/headless-cache').read_text().strip())
-s=(c/'native-local/headless/core.cpp').read_text()
+s=eglantine_source('src/core/core.cpp')
 backing='    std::optional<Core::DeviceMemory> device_memory;'
 kernel='    Kernel::KernelCore kernel;'
 assert s.count(backing)==1 and s.index(backing)<s.index(kernel)
@@ -36,7 +37,9 @@ a=s.index('        if (init_result != SystemResultStatus::Success) {')
 b=s.index('        // Waiting for GPU', a)
 branch=s[a:b]
 assert 'process.reset();' in branch and branch.index('process.reset();') < branch.index('ShutdownMainProcess();')
-assert s.count('            process.reset();\n            ShutdownMainProcess();') == 2
+# Every failure path of Load releases the process before the kernel shuts down.
+pairs = s.count('            process.reset();\n            ShutdownMainProcess();')
+assert pairs >= 2 and pairs == s.count('            ShutdownMainProcess();'), pairs
 with tempfile.TemporaryDirectory(prefix='eden-process-order-') as tmp:
  p=Path(tmp);src=p/'test.cpp';exe=p/'test'
  src.write_text('''#include <memory>

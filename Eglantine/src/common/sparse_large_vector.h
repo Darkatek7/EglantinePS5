@@ -29,12 +29,16 @@ constexpr u64 HostPageMask = ~(HostPageSize - 1);
 bool CommitVectorPage(uintptr_t addr, bool write) noexcept;
 #else
 inline const u64 HostPageSize = sysconf(_SC_PAGESIZE);
-inline const u64 HostPageBits = std::countr_zero(HostPageSize);
-inline const u64 HostPageMask = ~(HostPageSize - 1);
+inline const u64 HostPageBits = std::countr_zero(static_cast<u64>(sysconf(_SC_PAGESIZE)));
+inline const u64 HostPageMask = ~(static_cast<u64>(sysconf(_SC_PAGESIZE)) - 1);
 #endif
 
 void* AllocateMemoryPages(std::size_t size) noexcept;
 void FreeMemoryPages(void* base, std::size_t size) noexcept;
+void* AllocateSparsePages(std::size_t size) noexcept;
+void FreeSparsePages(void* base, std::size_t size) noexcept;
+void CommitSparsePage(std::uintptr_t page) noexcept;
+bool SparseTablesAvailable() noexcept;
 
 /// A large page-aligned buffer that has optimized memory usage for zero-writes.
 template <typename T>
@@ -47,7 +51,7 @@ public:
     explicit SparseLargeVector(std::size_t count) noexcept
         : alloc_size{count * sizeof(T)}
     {
-        base_ptr = static_cast<T*>(AllocateMemoryPages(alloc_size));
+        base_ptr = static_cast<T*>(AllocateSparsePages(alloc_size));
 
         // each item in vector holds information for 64 pages
         auto denom = HostPageSize * 64;
@@ -55,7 +59,7 @@ public:
     }
 
     ~SparseLargeVector() noexcept {
-        FreeMemoryPages(base_ptr, alloc_size);
+        FreeSparsePages(base_ptr, alloc_size);
     }
 
     SparseLargeVector(const SparseLargeVector&) = delete;
@@ -65,9 +69,9 @@ public:
 
     void ResizeAndClear(std::size_t count) noexcept {
         if (auto const new_size = count * sizeof(T); new_size != alloc_size) {
-            FreeMemoryPages(base_ptr, alloc_size);
+            FreeSparsePages(base_ptr, alloc_size);
             alloc_size = new_size;
-            base_ptr = static_cast<T*>(AllocateMemoryPages(alloc_size));
+            base_ptr = static_cast<T*>(AllocateSparsePages(alloc_size));
 
             auto denom = HostPageSize * 64;
             committed_pages = std::vector<std::atomic<u64>>((alloc_size + denom - 1) / denom);
@@ -171,6 +175,8 @@ private:
     }
 
     constexpr bool CommitPage(std::size_t index) noexcept {
+        if (mirror_index != 0 && index < mirror_index && !IsCommittedPage(index + mirror_index))
+            CommitPage(index + mirror_index);
         auto page_index = (index * sizeof(T)) >> HostPageBits;
         auto page = reinterpret_cast<uintptr_t>(base_ptr + index) & HostPageMask;
 #if defined(_WIN32)
@@ -178,7 +184,7 @@ private:
             return false;
         }
 #else
-        if (mprotect(reinterpret_cast<void*>(page), HostPageSize, PROT_READ | PROT_WRITE) != 0) {
+        if ((CommitSparsePage(page), 0) != 0) {
             LOG_ERROR(Common_Memory, "Failed to commit large buffer region at index {}, error {}", index, strerror(errno));
             return false;
         }
@@ -188,6 +194,10 @@ private:
         return true;
     }
 
+public:
+    std::size_t mirror_index{};
+
+private:
     std::size_t alloc_size{};
     T* base_ptr{};
 

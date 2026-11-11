@@ -19,6 +19,7 @@ public:
     };
 
     KWorkerTaskManager();
+    void WaitForRequests() { m_waiting_thread.WaitForRequests(); }
 
     static void AddTask(KernelCore& kernel, WorkerType type, KWorkerTask* task);
 

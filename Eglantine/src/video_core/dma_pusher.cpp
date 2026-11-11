@@ -1,3 +1,9 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <chrono>
+#include <atomic>
+#include "headless/performance.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -68,6 +74,16 @@ bool DmaPusher::CanResumeAcquire() {
 }
 
 void DmaPusher::DispatchCalls() {
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    if (::Eden::Performance::gpu_dirty_pending.load(std::memory_order_relaxed)) {
+        if (auto& split = VideoCommon::GpuSplit::Get(); split.Active()) {
+            split.Defer([memory = &memory_manager] { memory->FlushCaching(); });
+        } else {
+            memory_manager.FlushCaching();
+        }
+    }
+#endif // PS5
     // The sub-index is kept: a channel suspended on a semaphore resumes inside its command list.
     dma_state.is_last_call = true;
     while (system.IsPoweredOn()) {

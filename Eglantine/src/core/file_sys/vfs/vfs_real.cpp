@@ -1,3 +1,8 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <cstdio>
+#include "headless/native_directory_metadata.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -55,7 +60,11 @@ size_t MaxOpenFiles() {
         return static_cast<size_t>(std::max<rlim_t>(rl.rlim_cur, 576) - 512);
     }();
 #endif
+#if !defined(__PROSPERO__) // not PS5
     return (std::min)(size_t{8192}, limit);
+#else // PS5
+    return (std::min)(size_t{128}, limit);
+#endif // PS5
 }
 
 bool IsWithinRoot(std::string_view root, std::string_view full_path) {
@@ -84,7 +93,13 @@ constexpr FS::FileAccessMode ModeFlagsToFileAccessMode(OpenMode mode) {
 
 } // Anonymous namespace
 
+#if !defined(__PROSPERO__) // not PS5
 RealVfsFilesystem::RealVfsFilesystem() : VfsFilesystem(nullptr) {}
+#else // PS5
+RealVfsFilesystem::RealVfsFilesystem() : VfsFilesystem(nullptr) {
+    std::fprintf(stderr, "EDEN_VFS_CACHE max_open_files=%zu\n", MaxOpenFiles());
+}
+#endif // PS5
 RealVfsFilesystem::~RealVfsFilesystem() {
     in_dtor = true;
 }
@@ -487,7 +502,19 @@ bool RealVfsDirectory::DeleteSubdirectoryRecursive(std::string_view name) {
 }
 
 std::vector<VirtualFile> RealVfsDirectory::GetFiles() const {
+#if !defined(__PROSPERO__) // not PS5
     return IterateEntries<RealVfsFile, VfsFile>();
+#else // PS5
+    if (perms == OpenMode::AllowAppend) return {};
+    std::error_code error;
+    const auto entries = Eden::ReadNativeDirectoryMetadata(path, false, error);
+    if (error) { LOG_ERROR(Common_Filesystem, "Directory enumeration failed: {}: {}", path, error.message()); return {}; }
+    std::vector<VirtualFile> out;
+    out.reserve(entries.size());
+    for (const auto& entry : entries)
+        out.push_back(base.OpenFileFromEntry(FS::PathToUTF8String(entry.path), entry.size, perms));
+    return out;
+#endif // PS5
 }
 
 FileTimeStampRaw RealVfsDirectory::GetFileTimeStamp(std::string_view path_) const {
@@ -514,7 +541,19 @@ FileTimeStampRaw RealVfsDirectory::GetFileTimeStamp(std::string_view path_) cons
 }
 
 std::vector<VirtualDir> RealVfsDirectory::GetSubdirectories() const {
+#if !defined(__PROSPERO__) // not PS5
     return IterateEntries<RealVfsDirectory, VfsDirectory>();
+#else // PS5
+    if (perms == OpenMode::AllowAppend) return {};
+    std::error_code error;
+    const auto entries = Eden::ReadNativeDirectoryMetadata(path, true, error);
+    if (error) { LOG_ERROR(Common_Filesystem, "Directory enumeration failed: {}: {}", path, error.message()); return {}; }
+    std::vector<VirtualDir> out;
+    out.reserve(entries.size());
+    for (const auto& entry : entries)
+        out.push_back(base.OpenDirectory(FS::PathToUTF8String(entry.path), perms));
+    return out;
+#endif // PS5
 }
 
 bool RealVfsDirectory::IsWritable() const {

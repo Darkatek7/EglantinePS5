@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdio>
+#include "dev_vulkan.h"
+#include "performance.h"
 #include <array>
 #include <bitset>
 #include <chrono>
@@ -838,9 +841,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     functions.vkFreeMemory = TimedFreeMemory;
 
     VmaAllocatorCreateFlags flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
-    if (extensions.memory_budget) {
-        flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-    }
+    // The driver's budget is not asked for: its count is double (tools/prepare-vulkan-port.py).
     if (extensions.buffer_device_address) {
         flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     }
@@ -1579,11 +1580,15 @@ void Device::RemoveUnsuitableExtensions() {
     if (extensions.custom_border_color) {
         extensions.custom_border_color =
             features.custom_border_color.customBorderColors &&
-            features.custom_border_color.customBorderColorWithoutFormat;
+            features.custom_border_color.customBorderColorWithoutFormat &&
+            !::Eden::DevVulkan::disable_custom_border;
     }
     RemoveExtensionFeatureIfUnsuitable(extensions.custom_border_color, features.custom_border_color,
                                        VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
 
+    if (::Eden::DevVulkan::disable_conditional_rendering) {
+        extensions.conditional_rendering = false;
+    }
     // VK_EXT_border_color_swizzle
     if (extensions.border_color_swizzle) {
         extensions.border_color_swizzle =
@@ -1606,7 +1611,8 @@ void Device::RemoveUnsuitableExtensions() {
                                        VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
 
     // VK_EXT_descriptor_buffer
-    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;
+    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer &&
+        !::Eden::DevVulkan::disable_descriptor_buffer;
     RemoveExtensionFeatureIfUnsuitable(extensions.descriptor_buffer, features.descriptor_buffer,
                                        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
 
@@ -1682,8 +1688,13 @@ void Device::RemoveUnsuitableExtensions() {
                                        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 
     // VK_EXT_robustness2
-    features.robustness2.robustBufferAccess2 = VK_FALSE;
-    features.robustness2.robustImageAccess2 = VK_FALSE;
+    if (!::Eden::DevVulkan::robustness2) {
+        features.robustness2.robustBufferAccess2 = VK_FALSE;
+        features.robustness2.robustImageAccess2 = VK_FALSE;
+    }
+    if (::Eden::DevVulkan::disable_null_descriptor) {
+        features.robustness2.nullDescriptor = VK_FALSE;
+    }
     extensions.robustness_2 = features.robustness2.nullDescriptor;
 
     const char* robustness2_extension_name =
@@ -1946,7 +1957,8 @@ void Device::SetupFamilies(VkSurfaceKHR surface) {
     if (graphics) {
         graphics_family = *graphics;
         graphics_family_sparse_binding =
-            (queue_family_properties[*graphics].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0;
+            (queue_family_properties[*graphics].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0 &&
+            !::Eden::DevVulkan::disable_sparse;
     }
     if (present) {
         present_family = *present;
@@ -1975,7 +1987,24 @@ void Device::ReleaseCustomBorderColorSamplers(size_t count) const {
     custom_border_color_samplers_used.fetch_sub(count, std::memory_order_relaxed);
 }
 
+namespace {
+// The largest block of the shared pool that was free when the device was made: about the most
+// graphics can be given in this session.
+u64 graphics_capacity = 0;
+}
+
 u64 Device::GetDeviceMemoryUsage() const {
+    if (const auto free_memory = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed);
+        free_memory && ::Eden::Performance::graphics_usage_from_pool.load(std::memory_order_relaxed)) {
+        // The caches evict what is unused 1.6 GiB under the budget and evict hard 0.8 GiB under
+        // it. Where the pool could never give graphics 6.4 GiB, those marks become a quarter
+        // and an eighth of what it could give.
+        const double scale = graphics_capacity != 0 && graphics_capacity < 6400_MiB
+                                 ? static_cast<double>(6400_MiB) / static_cast<double>(graphics_capacity)
+                                 : 1.0;
+        const u64 free_bytes = static_cast<u64>(static_cast<double>(free_memory()) * scale);
+        return device_access_memory > free_bytes ? device_access_memory - free_bytes : 0;
+    }
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
     physical.GetMemoryProperties(&budget);
@@ -2001,6 +2030,10 @@ u64 Device::GetDeviceMemorySlack() const {
 }
 
 u64 Device::GetDeviceMemoryBudget() const {
+    if (::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed) &&
+        ::Eden::Performance::graphics_usage_from_pool.load(std::memory_order_relaxed)) {
+        return device_access_memory;
+    }
     if (!extensions.memory_budget) {
         return 0;
     }
@@ -2097,6 +2130,15 @@ void Device::CollectPhysicalMemoryInfo() {
             device_access_memory = std::min<u64>(device_access_memory, normal_memory + scaler_memory);
         }
     }
+    if (const auto free_memory = ::Eden::Performance::graphics_memory_free.load(std::memory_order_relaxed)) {
+        graphics_capacity = free_memory();
+    }
+    std::printf("EDEN_VULKAN_MEMORY integrated=%d heaps=%zu local=%llu initial_usage=%llu device_access=%llu "
+                "capacity=%llu\n",
+                int(is_integrated), valid_heap_memory.size(), static_cast<unsigned long long>(local_memory),
+                static_cast<unsigned long long>(device_initial_usage),
+                static_cast<unsigned long long>(device_access_memory),
+                static_cast<unsigned long long>(graphics_capacity));
 }
 
 void Device::CollectToolingInfo() {

@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/performance.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -681,6 +685,10 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 }
 
 void SetCurrentThreadName(const char* name) {
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    ::Eden::Performance::RegisterWorker(name);
+#endif // PS5
 #ifdef _WIN32
     // Sets the debugger-visible name of the current thread (Windows 10+). Looked up at run time,
     // which also covers MinGW, whose headers may not declare it.

@@ -86,7 +86,7 @@ void VoiceInfo::UpdateParameters(BehaviorInfo::ErrorInfo& error_info, const InPa
     }
 
     if (behavior.IsVoicePitchAndSrcSkippedSupported()) {
-        flags |= u16(params.flags.IsVoicePitchAndSrcSkippedSupported);
+        flags |= u16(params.flags.IsVoicePitchAndSrcSkippedSupported) << 1;
     }
 
     if (params.clear_voice_drop) {

@@ -109,6 +109,7 @@ public:
     virtual std::pair<bool, Errno> GetNoDelay() = 0;
 
     virtual bool IsOpened() const = 0;
+    virtual std::optional<PollEvents> PollProxy(PollEvents events) { return std::nullopt; }
 
     /// Whether HandleProxyPacket would queue the packet; checked before decompressing it
     virtual bool AcceptsProxyPacket(const ProxyPacket& packet) = 0;

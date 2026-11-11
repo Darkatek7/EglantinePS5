@@ -102,8 +102,15 @@ Result IFileSystem::OpenFile(OutInterface<IFile> out_interface,
     LOG_DEBUG(Service_FS, "called. file={}, mode={}", path->str, mode);
 
     FileSys::VirtualFile vfs_file{};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const Result fs_open_result = backend->OpenFile(&vfs_file, FileSys::Path(path->str),
+                            static_cast<FileSys::OpenMode>(mode));
+    LOG_WARNING(Service_FS, "EDEN_FS_OPEN kind=file path={} result={:#x}", path->str, fs_open_result.raw);
+    R_TRY(fs_open_result);
+#else // PS5
     R_TRY(backend->OpenFile(&vfs_file, FileSys::Path(path->str),
                             static_cast<FileSys::OpenMode>(mode)));
+#endif // PS5
 
     *out_interface = std::make_shared<IFile>(system, vfs_file);
     R_SUCCEED();
@@ -115,8 +122,15 @@ Result IFileSystem::OpenDirectory(OutInterface<IDirectory> out_interface,
     LOG_DEBUG(Service_FS, "called. directory={}, mode={}", path->str, mode);
 
     FileSys::VirtualDir vfs_dir{};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const Result fs_open_result = backend->OpenDirectory(&vfs_dir, FileSys::Path(path->str),
+                                 static_cast<FileSys::OpenDirectoryMode>(mode));
+    LOG_WARNING(Service_FS, "EDEN_FS_OPEN kind=directory path={} result={:#x}", path->str, fs_open_result.raw);
+    R_TRY(fs_open_result);
+#else // PS5
     R_TRY(backend->OpenDirectory(&vfs_dir, FileSys::Path(path->str),
                                  static_cast<FileSys::OpenDirectoryMode>(mode)));
+#endif // PS5
 
     *out_interface = std::make_shared<IDirectory>(system, vfs_dir,
                                                   static_cast<FileSys::OpenDirectoryMode>(mode));
@@ -128,7 +142,13 @@ Result IFileSystem::GetEntryType(
     LOG_DEBUG(Service_FS, "called. file={}", path->str);
 
     FileSys::DirectoryEntryType vfs_entry_type{};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const Result fs_open_result = backend->GetEntryType(&vfs_entry_type, FileSys::Path(path->str));
+    LOG_WARNING(Service_FS, "EDEN_FS_OPEN kind=entry path={} result={:#x}", path->str, fs_open_result.raw);
+    R_TRY(fs_open_result);
+#else // PS5
     R_TRY(backend->GetEntryType(&vfs_entry_type, FileSys::Path(path->str)));
+#endif // PS5
 
     *out_type = static_cast<u32>(vfs_entry_type);
     R_SUCCEED();

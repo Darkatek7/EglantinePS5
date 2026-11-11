@@ -60,7 +60,7 @@ public:
     void DrawToFrame(const Device& device, RasterizerVulkan& rasterizer, Frame* frame,
                      std::span<const Tegra::FramebufferConfig> framebuffers,
                      const Layout::FramebufferLayout& layout, size_t current_swapchain_image_count,
-                     VkFormat current_swapchain_view_format);
+                     VkFormat current_swapchain_view_format, bool draw_hud = false);
 
     void PrepareFrame(const Device& device, Frame* frame, const Layout::FramebufferLayout& layout);
 

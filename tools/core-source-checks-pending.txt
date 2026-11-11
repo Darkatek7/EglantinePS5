@@ -1,16 +1,12 @@
-# Release source checks still written for the older pinned Eden core (3140648a66 plus the patch
-# series), which fail on the in-repo Eglantine/ (upstream nx2 babdb6bb75 plus our commits). In a
-# lenient build (EDEN_PORT_LENIENT=1, the default for now) they report and the build goes on; every
-# check not listed here must pass. Remove a line once its check is rewritten for Eglantine/ or its
-# PS5 change is folded into it.
-check-load-failure            # AssertionError
-check-extracted-content       # anchor text not found
-check-startup-performance     # excerpt no longer compiles
-check-tsc-fallback            # AssertionError
-check-nx2-core                # its CMake test project fails to configure on this core
-check-bananza-terrain         # excerpt no longer compiles
-check-native-gpu-thread       # AssertionError
-check-gpu-producer-stop       # excerpt no longer compiles
-check-gpu-sync-stop           # excerpt no longer compiles
-check-vulkan-handoff          # excerpt no longer compiles
-check-fence-requirements      # needs video_core/readback_diagnostics.h (patch 0004, not ported)
+# Release source checks that test a PS5 change Eglantine/ does not have yet: they were written with
+# the older pinned core's patch series (tools/eglantine-patches/ before Eglantine/ came into this
+# repository) or with a port edit that no longer applied to this core. In a lenient build
+# (EDEN_PORT_LENIENT=1, the default for now, tools/build-package.sh) they report and the build goes
+# on; every check not listed here must pass. Remove a line when its change is in Eglantine/.
+check-native-gpu-thread       # GPU shutdown order: wake sync waiters, then join the worker (gpu.cpp)
+check-gpu-sync-stop           # GPU sync requests dropped at shutdown (gpu.cpp, dma_pusher.cpp, puller.cpp)
+check-gpu-producer-stop       # host command queue and completion (patches 0004, 0006)
+check-fence-requirements      # readback diagnostics (patch 0004: video_core/readback_diagnostics.h)
+check-bananza-terrain         # Bananza terrain counters (patch 0008)
+check-nx2-core                # its test project's sources from the patch series (src/tests/...)
+check-extracted-content       # versioned extracted content (patch 0001)

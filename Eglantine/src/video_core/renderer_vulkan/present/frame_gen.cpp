@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/vulkan_common/vulkan_device.h"
+#include "diagnostics.h"
 
 namespace Vulkan {
 
@@ -244,6 +245,12 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     const bool warm = plan.warm && count + 1 >= LSFG_REQUIRED_FRAMES;
     warm_streak = warm ? warm_streak + 1 : 0;
     generated = warm && warm_streak >= LSFG_RECURRENCE_FRAMES && plan.generations > 0;
+    if (generated && !generation_reported) {
+        generation_reported = true;
+        Eden::Report("framegen",
+                     ("generating " + std::to_string(plan.generations) +
+                      " extra frame(s) per guest frame").c_str());
+    }
     generated_frames.fetch_add(GeneratedFrameCount(), std::memory_order_relaxed);
 
     const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;

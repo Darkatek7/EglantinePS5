@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/assets_dir.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -742,7 +746,11 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
 
     if (bis_factory == nullptr) {
         bis_factory = std::make_unique<FileSys::BISFactory>(
+#if !defined(__PROSPERO__) // not PS5
             nand_directory, std::move(load_directory), std::move(dump_directory));
+#else // PS5
+            nand_directory, std::move(load_directory), std::move(dump_directory), vfs.OpenDirectory(Eden::AssetsPath("firmware"), FileSys::OpenMode::Read));
+#endif // PS5
         system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::SysNAND,
                                        bis_factory->GetSystemNANDContents());
         system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::UserNAND,

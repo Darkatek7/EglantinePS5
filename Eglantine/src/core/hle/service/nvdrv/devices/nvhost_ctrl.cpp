@@ -1,3 +1,7 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -198,8 +202,17 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     }
     params.value.raw |= slot;
 
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto wait_start = ::Eden::Performance::NowNs();
+#else // PS5
+#endif // PS5
     event.wait_handle =
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot, wait_start]() {
+            ::Eden::Performance::AddSince(::Eden::Performance::guest_sync_wait, wait_start);
+#else // PS5
         host1x_syncpoint_manager.RegisterHostAction(fence_id, target_value, [this, slot]() {
+#endif // PS5
             auto& event_ = events[slot];
             if (event_.status.exchange(EventState::Signalling, std::memory_order_acq_rel) ==
                 EventState::Waiting) {

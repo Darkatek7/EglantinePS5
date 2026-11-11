@@ -1,7 +1,11 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstdio>
+#include "dev_vulkan.h"
+#include "diagnostics.h"
 #include <mutex>
 #include <utility>
 
@@ -162,6 +166,7 @@ SparseBuffer MultiRangeBufferCache::CreateSparse(const Device& device, Scheduler
         bind_result = device.GetGraphicsQueue().BindSparse(bind_info, *fence);
     }
     if (bind_result != VK_SUCCESS) {
+        if (::Eden::DevVulkan::trace_pipelines) ::Eden::Report("multirange", "sparse bind failed");
         return SparseBuffer{};
     }
     fence.Wait();
@@ -182,8 +187,17 @@ void MultiRangeBufferCache::RetireEntry(Scheduler& scheduler, Entry& entry) {
                 oldest = item.tick;
             }
         }
-        scheduler.Wait(oldest);
+        { auto timer = Eden::Performance::VulkanTimer(11); scheduler.Wait(oldest); }
         DrainRetired(scheduler);
+    }
+    if (::Eden::DevVulkan::trace_pipelines) {
+        static unsigned retires = 0;
+        if (++retires <= 64) {
+            char text[96];
+            std::snprintf(text, sizeof(text), "retire #%u sparse=%d tick=%llu", retires,
+                          int(bool(entry.sparse_handle)), (unsigned long long)scheduler.CurrentTick());
+            ::Eden::Report("multirange", text);
+        }
     }
     retired.push_back(Retired{
         .handle = std::move(entry.sparse_handle),
@@ -298,6 +312,16 @@ MultiRangeRef MultiRangeBufferCache::Get(const Device& device, Scheduler& schedu
         ref.handle = *entry.gathered;
         ref.sparse = false;
         ref.needs_gather = true;
+    }
+    if (::Eden::DevVulkan::trace_pipelines) {
+        static unsigned created = 0;
+        if (++created <= 256) {
+            char text[192];
+            std::snprintf(text, sizeof(text), "new #%u key=%llx total=%llu sources=%zu sparse=%d addr=%llx",
+                          created, (unsigned long long)key, (unsigned long long)total, sources.size(),
+                          int(bool(entry.sparse_handle)), (unsigned long long)entry.address);
+            ::Eden::Report("multirange", text);
+        }
     }
     entries.emplace(key, std::move(entry));
     return ref;

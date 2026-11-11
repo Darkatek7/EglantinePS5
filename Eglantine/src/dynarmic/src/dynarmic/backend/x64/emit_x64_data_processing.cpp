@@ -1509,6 +1509,12 @@ void EmitX64::EmitZeroExtendHalfToLong(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitZeroExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (args[0].IsInXmm(ctx.reg_alloc) && code.HasHostFeature(HostFeature::SSE41)) {
+        const auto result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+        code.pmovzxdq(result, result); // U64 consumes only the zero-extended low word.
+        ctx.reg_alloc.DefineValue(code, inst, result);
+        return;
+    }
     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
     code.mov(result.cvt32(), result.cvt32());  // x64 zeros upper 32 bits on a 32-bit move
     ctx.reg_alloc.DefineValue(code, inst, result);

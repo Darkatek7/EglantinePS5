@@ -24,6 +24,8 @@
 #include "video_core/vulkan_common/streamline.h"
 #endif
 
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
+
 namespace Vulkan {
 namespace {
 
@@ -46,6 +48,9 @@ namespace {
     std::vector<const char*> extensions;
     extensions.reserve(6);
     switch (window_type) {
+    case Core::Frontend::WindowSystemType::PS5:
+        extensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+        break;
     case Core::Frontend::WindowSystemType::Headless:
         break;
 #ifdef _WIN32
@@ -64,7 +69,7 @@ namespace {
     case Core::Frontend::WindowSystemType::Xcb:
         extensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
         break;
-#else
+#elif !defined(PS5_NATIVE)
     case Core::Frontend::WindowSystemType::X11:
         extensions.push_back(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
         break;
@@ -136,14 +141,8 @@ void RemoveUnavailableLayers(const vk::InstanceDispatch& dld, std::vector<const 
 vk::Instance CreateInstance(const Common::DynamicLibrary& library, vk::InstanceDispatch& dld,
                             u32 required_version, Core::Frontend::WindowSystemType window_type,
                             bool enable_validation) {
-    if (!library.IsOpen()) {
-        LOG_ERROR(Render_Vulkan, "Vulkan library not available");
-        throw vk::Exception(VK_ERROR_INITIALIZATION_FAILED);
-    }
-    if (!library.GetSymbol("vkGetInstanceProcAddr", &dld.vkGetInstanceProcAddr)) {
-        LOG_ERROR(Render_Vulkan, "vkGetInstanceProcAddr not present in Vulkan");
-        throw vk::Exception(VK_ERROR_INITIALIZATION_FAILED);
-    }
+    (void)library;
+    dld.vkGetInstanceProcAddr = &::vkGetInstanceProcAddr;
     if (!vk::Load(dld)) {
         LOG_ERROR(Render_Vulkan, "Failed to load Vulkan function pointers");
         throw vk::Exception(VK_ERROR_INITIALIZATION_FAILED);

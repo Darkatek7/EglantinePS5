@@ -59,6 +59,7 @@ public:
     /// any thread processes requests, StartAdditionalHostThreads included.
     void SetDeferralCancelHandler(DeferralCancelHandler&& handler);
 
+    void RequestStop();
     Result LoopProcess();
     void StartAdditionalHostThreads(const char* name, size_t num_threads);
 
@@ -84,6 +85,10 @@ private:
 private:
     Core::System& m_system;
     Mutex m_selection_mutex;
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    std::string m_eden_names;
+#else // PS5
+#endif // PS5
 
     // Events
     Kernel::KEvent* m_wakeup_event{};

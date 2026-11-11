@@ -1,3 +1,8 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include <chrono>
+#include <cstdio>
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -97,14 +102,29 @@ ServerManager::ServerManager(Core::System& system)
     m_wakeup_holder->LinkToMultiWait(std::addressof(m_deferred_list));
 }
 
-ServerManager::~ServerManager() {
-    // Signal stop.
+void ServerManager::RequestStop() {
     m_stop_source.request_stop();
     m_wakeup_event->Signal(m_system.Kernel());
+}
+
+ServerManager::~ServerManager() {
+    RequestStop();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto eden_t0 = std::chrono::steady_clock::now();
+#else // PS5
+#endif // PS5
 
     // Wait for processing to stop.
     m_stopped.Wait();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto eden_t1 = std::chrono::steady_clock::now();
+#else // PS5
+#endif // PS5
     m_threads.clear();
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto eden_t2 = std::chrono::steady_clock::now();
+#else // PS5
+#endif // PS5
 
     // Clean up ports.
     auto port_it = m_servers.begin();
@@ -114,13 +134,26 @@ ServerManager::~ServerManager() {
         delete port;
     }
 
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto eden_t3 = std::chrono::steady_clock::now();
+    size_t eden_sessions = 0;
+#else // PS5
+#endif // PS5
     // Clean up sessions.
     auto session_it = m_sessions.begin();
     while (session_it != m_sessions.end()) {
         auto* const session = std::addressof(*session_it);
         session_it = m_sessions.erase(session_it);
         delete session;
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        ++eden_sessions;
+#else // PS5
+#endif // PS5
     }
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto eden_t4 = std::chrono::steady_clock::now();
+#else // PS5
+#endif // PS5
 
     // Close wakeup event.
     m_wakeup_event->GetReadableEvent().Close(m_system.Kernel());
@@ -129,6 +162,16 @@ ServerManager::~ServerManager() {
     if (m_deferral_event) {
         m_deferral_event->GetReadableEvent().Close(m_system.Kernel());
         // Write event is owned by ServiceManager
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    }
+    const auto eden_t5 = std::chrono::steady_clock::now();
+    const auto eden_span = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    if (eden_span(eden_t0, eden_t5) >= 10.0) {
+        std::fprintf(stderr, "EDEN_SHUTDOWN_DTOR manager=%p services=%s stopped=%.1f threads=%.1f ports=%.1f sessions=%.1f n=%zu events=%.1f\n",
+                     static_cast<void*>(this), m_eden_names.c_str(), eden_span(eden_t0, eden_t1), eden_span(eden_t1, eden_t2),
+                     eden_span(eden_t2, eden_t3), eden_span(eden_t3, eden_t4), eden_sessions, eden_span(eden_t4, eden_t5));
+#else // PS5
+#endif // PS5
     }
 }
 
@@ -158,6 +201,10 @@ Result ServerManager::RegisterNamedService(const std::string& service_name,
                                            u32 max_sessions) {
     // Add the new server to sm: and get the moved server port.
     Kernel::KServerPort* server_port{};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    m_eden_names += service_name + " ";
+#else // PS5
+#endif // PS5
     R_ASSERT(m_system.ServiceManager().RegisterService(std::addressof(server_port), service_name,
                                                        max_sessions, handler_factory));
 
@@ -191,6 +238,10 @@ Result ServerManager::ManageNamedPort(const std::string& service_name,
                                       u32 max_sessions) {
     // Create a new port.
     auto* port = Kernel::KPort::Create(m_system.Kernel());
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    m_eden_names += service_name + " ";
+#else // PS5
+#endif // PS5
     port->Initialize(m_system.Kernel(), max_sessions, false, 0);
 
     // Register the port.

@@ -1,7 +1,8 @@
 from pathlib import Path
 import subprocess,tempfile,re
+from eglantine_source import EGLANTINE, source as eglantine_source  # the core, part of this repository
 r=Path(__file__).resolve().parents[1];c=Path((r/'.local/headless-cache').read_text().strip())
-t=(c/'native-local/headless/gpu.cpp').read_text()
+t=eglantine_source('src/video_core/gpu.cpp')
 def method(start,end): return t[t.index(start):t.index(end,t.index(start))]
 methods=method('    template <typename Func>','    [[nodiscard]] u64 GetTicks()')+method('    void NotifyShutdown()', '    /// Obtain the CPU Context')
 code=r'''
@@ -58,8 +59,8 @@ with tempfile.TemporaryDirectory() as tmp:
  subprocess.run(['g++','-std=c++20','-pthread','-fsanitize=address,undefined','-g',str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True,timeout=10)
 print('Actual GPU sync methods: cancelled/pending/active requests, callback lifetime, repeated shutdown PASS')# Execute the actual in-flight wait code with absent signals and shutdown.
-dma=(c/'native-local/headless/dma_pusher.cpp').read_text()
-puller=(c/'native-local/headless/engines_puller.cpp').read_text()
+dma=eglantine_source('src/video_core/dma_pusher.cpp')
+puller=eglantine_source('src/video_core/engines/puller.cpp')
 wait=re.split(r'    if \(signal_sync(?: && !synced)?\) \{',dma,maxsplit=1)[1].split('        signal_sync = false;',1)[0]
 acquire=puller.split('void Puller::ProcessSemaphoreAcquire(DmaPusher& dma_pusher) {',1)[1].split('\n}\n',1)[0]
 code=r'''

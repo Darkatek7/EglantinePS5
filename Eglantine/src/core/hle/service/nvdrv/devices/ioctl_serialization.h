@@ -116,7 +116,7 @@ NvResult WrapFixedInlOut(Self* self, F&& callable, std::span<const u8> input, st
     using InlOutVarArg = typename std::remove_reference_t<decltype(IoctlTwoArgTraits::GetSecondArgImpl(callable))>::value_type;
 
     const auto Callable = [&](auto& fixed, auto& var, auto& inl_in, auto& inl_out) -> NvResult {
-        return (self->*callable)(fixed, inl_out, std::forward<Rest>(rest)...);
+        return (self->*callable)(fixed, std::span<InlOutVarArg>{inl_out.data(), inl_out.size()}, std::forward<Rest>(rest)...);
     };
 
     return WrapGeneric<FixedArg, Null, Null, InlOutVarArg>(std::move(Callable), input, {}, output, inline_output);
@@ -127,7 +127,7 @@ NvResult WrapVariable(Self* self, F&& callable, std::span<const u8> input, std::
     using VarArg = typename std::remove_reference_t<decltype(IoctlOneArgTraits::GetFirstArgImpl(callable))>::value_type;
 
     const auto Callable = [&](auto& fixed, auto& var, auto& inl_in, auto& inl_out) -> NvResult {
-        return (self->*callable)(var, std::forward<Rest>(rest)...);
+        return (self->*callable)(std::span<VarArg>{var.data(), var.size()}, std::forward<Rest>(rest)...);
     };
 
     return WrapGeneric<Null, VarArg, Null, Null>(std::move(Callable), input, {}, output, {});
@@ -139,7 +139,7 @@ NvResult WrapFixedVariable(Self* self, F&& callable, std::span<const u8> input, 
     using VarArg   = typename std::remove_reference_t<decltype(IoctlTwoArgTraits::GetSecondArgImpl(callable))>::value_type;
 
     const auto Callable = [&](auto& fixed, auto& var, auto& inl_in, auto& inl_out) -> NvResult {
-        return (self->*callable)(fixed, var, std::forward<Rest>(rest)...);
+        return (self->*callable)(fixed, std::span<VarArg>{var.data(), var.size()}, std::forward<Rest>(rest)...);
     };
 
     return WrapGeneric<FixedArg, VarArg, Null, Null>(std::move(Callable), input, {}, output, {});
@@ -151,7 +151,7 @@ NvResult WrapFixedInlIn(Self* self, F&& callable, std::span<const u8> input, std
     using InlInVarArg = typename std::remove_reference_t<decltype(IoctlTwoArgTraits::GetSecondArgImpl(callable))>::value_type;
 
     const auto Callable = [&](auto& fixed, auto& var, auto& inl_in, auto& inl_out) -> NvResult {
-        return (self->*callable)(fixed, inl_in, std::forward<Rest>(rest)...);
+        return (self->*callable)(fixed, std::span<InlInVarArg>{inl_in.data(), inl_in.size()}, std::forward<Rest>(rest)...);
     };
 
     return WrapGeneric<FixedArg, Null, InlInVarArg, Null>(std::move(Callable), input, inline_input, output, {});

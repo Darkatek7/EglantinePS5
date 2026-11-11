@@ -61,6 +61,8 @@ private:
     bool generated{};
     bool unavailable{};
     bool dumped{};
+    bool generation_reported{};
+    bool storage_reported{};
     std::atomic<VideoCore::FrameGenState> state{VideoCore::FrameGenState::Pending};
     std::atomic<u64> generated_frames{};
 };

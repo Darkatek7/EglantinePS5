@@ -1,3 +1,7 @@
+#include <cstdio>
+#include <new>
+#include <stdexcept>
+#include <system_error>
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -1593,27 +1597,7 @@ static void ReadPipelines(
     }
 }
 
-void LoadPipelines(
-    std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
-    Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
-    Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics) {
-    std::error_code error;
-    if (!std::filesystem::exists(filename, error)) {
-        return;
-    }
-    // Another emulator appending to the cache or rewriting it finishes first, so that what it is
-    // writing is never taken for a damaged record.
-    const Common::FS::FileLock lock{PipelineCacheLockPath(filename), PipelineCacheLockWait,
-                                    stop_loading};
-    if (stop_loading.stop_requested()) {
-        return;
-    }
-    if (lock.Held()) {
-        std::filesystem::remove(RewritePath(filename), error); // A rewrite cut off
-    }
-    ReadPipelines(stop_loading, filename, expected_cache_version, lock.Held(),
-                  std::move(load_compute), std::move(load_graphics));
-}
+#include "headless/shader_cache_reader.inc"
 
 namespace {
 

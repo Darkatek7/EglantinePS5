@@ -20,6 +20,10 @@
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include <atomic>
+#include <cstdio>
+#include "performance.h"
+#include "staging_buffers.h"
 
 namespace Vulkan {
 namespace {
@@ -140,12 +144,26 @@ void StagingBufferPool::FreeDeferred(StagingBufferRef& ref) {
     it->deferred = false;
 }
 
+void StagingBufferPool::ReleaseCompleted() {
+    const auto idle = [this](const StagingBuffer& entry) {
+        return !entry.deferred && scheduler.IsFree(entry.tick);
+    };
+    for (StagingBuffersCache* const cache : {&device_local_cache, &upload_cache, &download_cache}) {
+        for (StagingBuffers& level : *cache) {
+            ::Eden::StagingBuffers::ReleaseFrom(level, idle);
+        }
+    }
+}
+
 void StagingBufferPool::TickFrame() {
     current_delete_level = (current_delete_level + 1) % NUM_LEVELS;
 
     ReleaseCache(MemoryUsage::DeviceLocal);
     ReleaseCache(MemoryUsage::Upload);
     ReleaseCache(MemoryUsage::Download);
+    if (::Eden::Performance::GraphicsMemoryIsShort()) {
+        ReleaseCompleted();
+    }
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
@@ -204,8 +222,9 @@ std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t s
                                                                         bool deferred) {
     StagingBuffers& cache_level = GetCache(usage)[Common::Log2Ceil(size)];
 
-    const auto is_free = [this](const StagingBuffer& entry) {
-        return !entry.deferred && scheduler.IsFree(entry.tick);
+    const auto is_free = [this, size](const StagingBuffer& entry) {
+        return !entry.deferred && scheduler.IsFree(entry.tick) &&
+               ::Eden::StagingBuffers::Holds(entry.mapped_span.size(), entry.log2_level) >= size;
     };
     auto& entries = cache_level.entries;
     const auto hint_it = entries.begin() + cache_level.iterate_index;
@@ -224,13 +243,41 @@ std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t s
 }
 
 StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage usage, bool deferred) {
+    if (static unsigned rows{}; size >= (64ULL << 20) && rows++ < 96) {
+        for (unsigned kind = 0; kind < 3; ++kind) {
+            auto& cache = kind == 0 ? device_local_cache : kind == 1 ? upload_cache : download_cache;
+            size_t count = 0, pinned = 0, busy = 0, free = 0;
+            unsigned long long bytes = 0;
+            for (const auto& level : cache) for (const auto& entry : level.entries) {
+                ++count;
+                bytes += ::Eden::StagingBuffers::Holds(entry.mapped_span.size(), entry.log2_level);
+                if (entry.deferred) ++pinned;
+                else if (scheduler.IsFree(entry.tick)) ++free;
+                else ++busy;
+            }
+            std::fprintf(stderr, "MKW_STAGING_MISS asked=%zu usage=%u deferred=%d kind=%u count=%zu bytes=%llu pinned=%zu busy=%zu free=%zu tick=%llu completed=%llu\n",
+                         size, unsigned(usage), int(deferred), kind, count, bytes, pinned, busy, free,
+                         static_cast<unsigned long long>(scheduler.CurrentTick()),
+                         static_cast<unsigned long long>(scheduler.GetMasterSemaphore().KnownGpuTick()));
+        }
+    }
+
     const VideoCommon::StutterTrace::SiteScope site{VideoCommon::StutterTrace::Site::StagingCreate};
     auto const log2_size = Common::Log2Ceil<u32>(u32(size));
+    const bool exact = ::Eden::StagingBuffers::Exact(size, usage != MemoryUsage::DeviceLocal);
+    const VkDeviceSize made = ::Eden::StagingBuffers::Size(size, log2_size, exact);
+    if (exact) {
+        // Kept buffers of this power of two too small for the transfer go before it is made.
+        ::Eden::StagingBuffers::ReleaseFrom(GetCache(usage)[log2_size], [this, size](const StagingBuffer& entry) {
+            return !entry.deferred && scheduler.IsFree(entry.tick) &&
+                   ::Eden::StagingBuffers::Holds(entry.mapped_span.size(), entry.log2_level) < size;
+        });
+    }
     VkBufferCreateInfo buffer_ci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .size = 1ULL << log2_size,
+        .size = made,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
@@ -245,7 +292,40 @@ StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage
     if (device.IsBufferDeviceAddressSupported()) {
         buffer_ci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
-    vk::Buffer buffer = memory_allocator.CreateBuffer(buffer_ci, usage);
+    vk::Buffer buffer;
+    try {
+        buffer = memory_allocator.CreateBuffer(buffer_ci, usage);
+    } catch (const vk::Exception& refused) {
+        if (refused.GetResult() != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            throw;
+        }
+        // Refused: the kept buffers the GPU is done with go, and the buffer is asked for once
+        // more. Refused again, the error goes on as before.
+        const auto idle = [this](const StagingBuffer& entry) {
+            return !entry.deferred && scheduler.IsFree(entry.tick);
+        };
+        ::Eden::StagingBuffers::Released released;
+        for (StagingBuffersCache* const cache : {&device_local_cache, &upload_cache, &download_cache}) {
+            for (StagingBuffers& level : *cache) {
+                released += ::Eden::StagingBuffers::ReleaseFrom(level, idle);
+            }
+        }
+        std::fprintf(stderr, "EDEN_STAGING_OOM asked=%zu made=%llu released=%zu buffers (%llu MiB)\n", size,
+                     static_cast<unsigned long long>(made), released.buffers,
+                     static_cast<unsigned long long>(released.bytes >> 20));
+        buffer = memory_allocator.CreateBuffer(buffer_ci, usage);
+    }
+    // A large buffer smaller than the power of two: the 1st, 2nd, 4th, 8th ... in the log.
+    if (exact && made >= (VkDeviceSize{64} << 20) && made < (VkDeviceSize{1} << log2_size)) {
+        static std::atomic<unsigned long long> large{0};
+        const auto times = large.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((times & (times - 1)) == 0) {
+            std::fprintf(stderr, "EDEN_STAGING_EXACT %llu MiB made for a transfer of %llu MiB, not the %llu MiB of the "
+                         "next power of two (%llu so far)\n",
+                         static_cast<unsigned long long>(made >> 20), static_cast<unsigned long long>(size >> 20),
+                         static_cast<unsigned long long>((VkDeviceSize{1} << log2_size) >> 20), times);
+        }
+    }
     if (device.HasDebuggingToolAttached()) {
         ++buffer_index;
         buffer.SetObjectNameEXT(fmt::format("Staging Buffer {}", buffer_index).c_str());

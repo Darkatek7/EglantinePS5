@@ -1,3 +1,4 @@
+#include "devices.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -139,6 +140,7 @@ std::vector<std::string> GetDeviceListForSink(Settings::AudioEngine sink_id, boo
 }
 
 std::unique_ptr<Sink> CreateSinkFromID(Settings::AudioEngine sink_id, std::string_view device_id) {
+    if (device_id == "ps5") return std::make_unique<Eden::AudioSink>();
     return GetOutputSinkDetails(sink_id).factory(device_id);
 }
 

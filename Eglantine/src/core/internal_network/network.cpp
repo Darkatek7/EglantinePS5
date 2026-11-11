@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <stdexcept>
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -5,6 +7,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -39,6 +42,9 @@
 #include "network/network.h"
 
 namespace Network {
+#ifndef IPPROTO_DCCP
+constexpr int IPPROTO_DCCP = 33;
+#endif
 
 namespace {
 
@@ -190,12 +196,24 @@ constexpr int SD_BOTH = SHUT_RDWR;
 int interrupt_pipe_fd[2] = {-1, -1};
 
 void Initialize() {
-    if (pipe(interrupt_pipe_fd) != 0) {
-        LOG_ERROR(Network, "Failed to create interrupt pipe!");
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, interrupt_pipe_fd) != 0)
+        throw std::runtime_error("Native wakeup socketpair failed");
+    try {
+        unsigned char value = 0x5a, received = 0;
+        errno = 0;
+        const auto written = send(interrupt_pipe_fd[1], &value, 1, MSG_DONTWAIT);
+        const int write_error = errno;
+        errno = 0;
+        const auto count = recv(interrupt_pipe_fd[0], &received, 1, MSG_DONTWAIT);
+        const int read_error = errno;
+        std::printf("EDEN_SOCKET_PRIME write=%lld write_errno=%d read=%lld read_errno=%d value=%u\n",
+            static_cast<long long>(written), write_error, static_cast<long long>(count), read_error, received);
+        if (written != 1 || count != 1 || received != value)
+            throw std::runtime_error("Native wakeup socketpair initialization failed");
+    } catch (...) {
+        for (int& fd : interrupt_pipe_fd) { close(fd); fd = -1; }
+        throw;
     }
-    int flags = fcntl(interrupt_pipe_fd[0], F_GETFL);
-    ASSERT_MSG(fcntl(interrupt_pipe_fd[0], F_SETFL, flags | O_NONBLOCK) == 0,
-               "Failed to set nonblocking state for interrupt pipe");
 }
 
 void Finalize() {
@@ -209,12 +227,20 @@ void Finalize() {
 
 void InterruptSocketOperations() {
     u8 value = 0;
-    ASSERT(write(interrupt_pipe_fd[1], &value, sizeof(value)) == 1);
+    errno = 0;
+    const auto written = send(interrupt_pipe_fd[1], &value, sizeof(value), MSG_DONTWAIT);
+    const int write_error = errno;
+    // A full nonblocking stream already has a pending wakeup for poll().
+    if (written == -1 && (write_error == EAGAIN || write_error == EWOULDBLOCK)) return;
+    if (written != 1) std::fprintf(stderr, "EDEN_SOCKET_INTERRUPT result=%lld errno=%d\n",
+        static_cast<long long>(written), write_error);
+    ASSERT(written == 1);
+
 }
 
 void AcknowledgeInterrupt() {
     u8 value = 0;
-    ssize_t ret = read(interrupt_pipe_fd[0], &value, sizeof(value));
+    ssize_t ret = recv(interrupt_pipe_fd[0], &value, sizeof(value), MSG_DONTWAIT);
     if (ret != 1 && errno != EAGAIN && errno != EWOULDBLOCK) {
         LOG_ERROR(Network, "Failed to acknowledge interrupt on shutdown");
     }
@@ -803,7 +829,7 @@ std::variant<std::vector<AddrInfo>, GetAddrInfoError> GetAddressInfo(
     return ret;
 }
 
-std::pair<s32, Errno> Poll(std::vector<PollFD>& pollfds, s32 timeout) {
+static std::pair<s32, Errno> PollNative(std::vector<PollFD>& pollfds, s32 timeout) {
     const size_t num = pollfds.size();
 
     std::vector<WSAPOLLFD> host_pollfds(pollfds.size());
@@ -855,6 +881,8 @@ std::pair<s32, Errno> Poll(std::vector<PollFD>& pollfds, s32 timeout) {
 
     return {-1, GetAndLogLastError()};
 }
+
+#include "multiplayer_poll.inc"
 
 Socket::~Socket() {
     if (fd == INVALID_SOCKET) {

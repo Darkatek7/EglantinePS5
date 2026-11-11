@@ -1,3 +1,4 @@
+#include "headless/kernel_spin_lock.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -933,7 +934,7 @@ private:
     bool m_resource_limit_release_hint{};
     bool m_is_kernel_address_key{};
     StackParameters m_stack_parameters{};
-    std::mutex m_context_guard{};
+    ::Eden::KernelSpinLock m_context_guard{};
 
     // For emulation
     std::shared_ptr<Common::Fiber> m_host_context{};

@@ -4,6 +4,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <algorithm>
+#include <chrono>
+#include <cerrno>
+#include <cstdio>
+#include "multiplayer_logging.h"
+#include "multiplayer_validation.h"
+#include "multiplayer_send.h"
+#include "multiplayer_nonblocking.h"
 #include <list>
 #include <mutex>
 #include <set>
@@ -22,6 +30,7 @@ constexpr u32 ConnectionTimeoutMs = 5000;
 class RoomMember::RoomMemberImpl {
 public:
     void SetState(const State new_state) noexcept {
+        if (new_state != State::Joined && new_state != State::Moderator) ping_ms = -1;
         if (state != new_state) {
             state = new_state;
             Invoke<State>(state);
@@ -36,6 +45,7 @@ public:
         return state == State::Joining || state == State::Joined || state == State::Moderator;
     }
 
+    std::atomic<int> ping_ms{-1};
     ENetHost* client = nullptr; ///< ENet network interface.
     ENetPeer* server = nullptr; ///< The server peer the client is connected to
 
@@ -60,6 +70,8 @@ public:
     /// Thread that receives and dispatches network packets
     std::optional<std::jthread> loop_thread;
     std::mutex send_list_mutex;  ///< Mutex that controls access to the `send_list` variable.
+    Eden::Multiplayer::RoomSendBudget send_list_budget, enet_send_budget;
+    std::atomic<bool> send_failed{false};
     std::vector<Packet> send_list; ///< A list that stores all packets to send the async
 
     template <typename T>
@@ -161,6 +173,7 @@ public:
 // RoomMemberImpl
 void RoomMember::RoomMemberImpl::StartLoop() {
     loop_thread.emplace([&](std::stop_token stoken) {
+        auto next_diagnostic = std::chrono::steady_clock::time_point{};
         // Receive packets while the connection is open
         while (IsConnected()) {
             std::lock_guard lock(network_mutex);
@@ -168,6 +181,14 @@ void RoomMember::RoomMemberImpl::StartLoop() {
             if (enet_host_service(client, &event, 5) > 0) {
                 switch (event.type) {
                 case ENET_EVENT_TYPE_RECEIVE:
+                    if (!Eden::Multiplayer::ValidRoomPacket(
+                            {event.packet->data, event.packet->dataLength})) {
+                        Eden::Multiplayer::Debug("Rejected malformed room packet");
+                        enet_packet_destroy(event.packet);
+                        SetState(State::Idle);
+                        SetError(Error::UnknownError);
+                        break;
+                    }
                     switch (event.packet->data[0]) {
                     case IdProxyPacket:
                         HandleProxyPackets(&event);
@@ -188,8 +209,11 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                     case IdJoinSuccessAsMod:
                         // The join request was successful, we are now in the room.
                         // If we joined successfully, there must be at least one client in the room: us.
-                        ASSERT_MSG(member_information.size() > 0,
-                                "We have not yet received member information.");
+                        if (state != State::Joining || member_information.empty()) {
+                            SetState(State::Idle);
+                            SetError(Error::UnknownError);
+                            break;
+                        }
                         HandleJoinPacket(&event); // Get the MAC Address for the client
                         if (event.packet->data[0] == IdJoinSuccessAsMod) {
                             SetState(State::Moderator);
@@ -242,7 +266,7 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                     enet_packet_destroy(event.packet);
                     break;
                 case ENET_EVENT_TYPE_DISCONNECT:
-                    if (state == State::Joined || state == State::Moderator) {
+                    if (IsConnected()) {
                         SetState(State::Idle);
                         SetError(Error::LostConnection);
                     }
@@ -256,24 +280,76 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                     break;
                 }
             }
+            if (send_failed.exchange(false)) {
+                SetState(State::Idle);
+                SetError(Error::LostConnection);
+            }
+            if (!IsConnected()) break;
             std::vector<Packet> packets;
             {
                 std::lock_guard send_lock(send_list_mutex);
                 packets.swap(send_list);
+                send_list_budget.Reset();
             }
             for (auto const& packet : packets) {
-                ENetPacket* enetPacket = enet_packet_create(packet.GetData(), packet.GetDataSize(),
-                                                            ENET_PACKET_FLAG_RELIABLE);
-                enet_peer_send(server, 0, enetPacket);
+                const auto size = packet.GetDataSize();
+                if (!enet_send_budget.Add(size)) {
+                    Eden::Multiplayer::Debug("Outstanding ENet send budget exceeded");
+                    SetState(State::Idle);
+                    SetError(Error::LostConnection);
+                    break;
+                }
+                ENetPacket* enetPacket = enet_packet_create(packet.GetData(), size, ENET_PACKET_FLAG_RELIABLE);
+                if (!enetPacket) {
+                    Eden::Multiplayer::Debug("Room packet allocation failed");
+                    enet_send_budget.Release(size);
+                    SetState(State::Idle);
+                    SetError(Error::LostConnection);
+                    break;
+                }
+                enetPacket->userData = &enet_send_budget;
+                enetPacket->freeCallback = [](ENetPacket* sent) {
+                    static_cast<Eden::Multiplayer::RoomSendBudget*>(sent->userData)->Release(sent->dataLength);
+                };
+                if (enet_peer_send(server, 0, enetPacket) != 0) {
+                    Eden::Multiplayer::Debug("ENet send failed");
+                    enet_packet_destroy(enetPacket);
+                    SetState(State::Idle);
+                    SetError(Error::LostConnection);
+                    break;
+                }
+            }
+            // Read ENet's measurement only on the thread that owns the peer.
+            if (server && (state == State::Joined || state == State::Moderator)) {
+                ping_ms = static_cast<int>(std::min(server->roundTripTime, enet_uint32{9999}));
+                if (Eden::Multiplayer::detailed_logging.load()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= next_diagnostic) {
+                        char detail[192];
+                        std::snprintf(detail, sizeof(detail),
+                            "Transport: rtt_ms=%u sent_packets=%u received_packets=%u enet_waiting_bytes=%zu",
+                            server->roundTripTime, client->totalSentPackets,
+                            client->totalReceivedPackets, server->totalWaitingData);
+                        Eden::Multiplayer::Debug(detail);
+                        next_diagnostic = now + std::chrono::seconds{5};
+                    }
+                }
             }
             enet_host_flush(client);
         }
+        ping_ms = -1;
         Disconnect();
     });
 }
 
 void RoomMember::RoomMemberImpl::Send(Packet&& packet) {
     std::lock_guard lock(send_list_mutex);
+    if (!IsConnected() || send_failed) return;
+    if (!send_list_budget.Add(packet.GetDataSize())) {
+        Eden::Multiplayer::Debug("Outgoing room queue limit exceeded");
+        send_failed = true;
+        return;
+    }
     send_list.push_back(std::move(packet));
 }
 
@@ -453,7 +529,9 @@ void RoomMember::RoomMemberImpl::Disconnect() {
     enet_peer_disconnect(server, 0);
 
     ENetEvent event;
-    while (enet_host_service(client, &event, ConnectionTimeoutMs) > 0) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (enet_host_service(client, &event, 20) <= 0) continue;
         switch (event.type) {
         case ENET_EVENT_TYPE_RECEIVE:
             enet_packet_destroy(event.packet); // Ignore all incoming data
@@ -573,7 +651,7 @@ RoomInformation RoomMember::GetRoomInformation() const {
 
 void RoomMember::Join(const std::string& nick, const char* server_addr, u16 server_port,
                       u16 client_port, const IPv4Address& preferred_fake_ip,
-                      const std::string& password, const std::string& token) {
+                      const std::string& password, const std::string& token, std::stop_token stop) {
     // If the member is connected, kill the connection first
     if (room_member_impl->loop_thread && room_member_impl->loop_thread->joinable()) {
         Leave();
@@ -585,13 +663,46 @@ void RoomMember::Join(const std::string& nick, const char* server_addr, u16 serv
 
     if (!room_member_impl->client) {
         room_member_impl->client = enet_host_create(nullptr, 1, NumChannels, 0, 0);
-        ASSERT_MSG(room_member_impl->client != nullptr, "Could not create client");
+        if (!room_member_impl->client) {
+            char detail[96];
+            std::snprintf(detail, sizeof(detail), "ENet client creation failed: errno=%d", errno);
+            Eden::Multiplayer::Debug(detail);
+            room_member_impl->SetState(State::Idle);
+            room_member_impl->SetError(Error::CouldNotConnect);
+            return;
+        }
+        room_member_impl->client->maximumPacketSize = Eden::Multiplayer::MaxRoomPacketBytes;
+        room_member_impl->client->maximumWaitingData = Eden::Multiplayer::MaxRoomPacketBytes;
+        // ENet ignores a failed fcntl(O_NONBLOCK); a blocking socket stalls the member loop.
+        if (!Eden::Multiplayer::MakeSocketNonBlocking(room_member_impl->client->socket)) {
+            char detail[96];
+            std::snprintf(detail, sizeof(detail),
+                "Room socket could not be made non-blocking: errno=%d", errno);
+            Eden::Multiplayer::Debug(detail);
+            enet_host_destroy(room_member_impl->client);
+            room_member_impl->client = nullptr;
+            room_member_impl->SetState(State::Idle);
+            room_member_impl->SetError(Error::CouldNotConnect);
+            return;
+        }
+        Eden::Multiplayer::Debug("Room socket is non-blocking");
     }
 
     room_member_impl->SetState(State::Joining);
 
     ENetAddress address{};
-    enet_address_set_host(&address, server_addr);
+    if (stop.stop_requested()) {
+        room_member_impl->SetState(State::Idle);
+        return;
+    }
+    // The controller already resolves IPv4; avoid a second platform DNS lookup.
+    if (enet_address_set_host_ip(&address, server_addr) != 0 &&
+        enet_address_set_host(&address, server_addr) != 0) {
+        Eden::Multiplayer::Debug("ENet address conversion failed");
+        room_member_impl->SetState(State::Idle);
+        room_member_impl->SetError(Error::CouldNotConnect);
+        return;
+    }
     address.port = server_port;
     room_member_impl->server =
         enet_host_connect(room_member_impl->client, &address, NumChannels, 0);
@@ -603,14 +714,38 @@ void RoomMember::Join(const std::string& nick, const char* server_addr, u16 serv
     }
 
     ENetEvent event{};
-    int net = enet_host_service(room_member_impl->client, &event, ConnectionTimeoutMs);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds{ConnectionTimeoutMs};
+    int net = 0;
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+        net = enet_host_service(room_member_impl->client, &event, 20);
+        if (net != 0) break;
+    }
+    if (net <= 0 && !stop.stop_requested()) {
+        const int error = net < 0 ? errno : 0;
+        char detail[192];
+        std::snprintf(detail, sizeof(detail),
+            "ENet handshake: result=%d errno=%d sent_packets=%u received_packets=%u",
+            net, error, room_member_impl->client->totalSentPackets,
+            room_member_impl->client->totalReceivedPackets);
+        Eden::Multiplayer::Debug(detail);
+    }
+    if (stop.stop_requested()) {
+        if (net > 0 && event.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(event.packet);
+        enet_peer_reset(room_member_impl->server);
+        room_member_impl->server = nullptr;
+        room_member_impl->SetState(State::Idle);
+        return;
+    }
     if (net > 0 && event.type == ENET_EVENT_TYPE_CONNECT) {
         room_member_impl->nickname = nick;
         room_member_impl->StartLoop();
         room_member_impl->SendJoinRequest(nick, preferred_fake_ip, password, token);
         SendGameInfo(room_member_impl->current_game_info);
     } else {
-        enet_peer_disconnect(room_member_impl->server, 0);
+        if (net > 0 && event.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(event.packet);
+        enet_peer_reset(room_member_impl->server);
+        room_member_impl->server = nullptr;
         room_member_impl->SetState(State::Idle);
         room_member_impl->SetError(Error::CouldNotConnect);
     }
@@ -746,6 +881,11 @@ void RoomMember::Leave() {
     room_member_impl->loop_thread.reset();
     enet_host_destroy(room_member_impl->client);
     room_member_impl->client = nullptr;
+    room_member_impl->server = nullptr;
+    std::lock_guard lock(room_member_impl->send_list_mutex);
+    room_member_impl->send_list.clear();
+    room_member_impl->send_list_budget.Reset();
+    room_member_impl->send_failed = false;
 }
 
 template void RoomMember::Unbind(CallbackHandle<ProxyPacket>);
@@ -758,3 +898,10 @@ template void RoomMember::Unbind(CallbackHandle<StatusMessageEntry>);
 template void RoomMember::Unbind(CallbackHandle<Room::BanList>);
 
 } // namespace Network
+namespace Network {
+int RoomMember::GetPingMilliseconds() const {
+    const auto state = GetState();
+    return state == State::Joined || state == State::Moderator ?
+        room_member_impl->ping_ms.load() : -1;
+}
+}

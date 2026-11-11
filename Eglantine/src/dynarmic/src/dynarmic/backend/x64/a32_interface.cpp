@@ -1,3 +1,8 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <cstdio>
+extern "C" void eden_jit_block(unsigned core, unsigned long long location, const void* entry, unsigned long long size) __attribute__((weak));
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -194,6 +199,11 @@ private:
 
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+            static thread_local unsigned pressure_count;
+            if (++pressure_count <= 3) std::printf("EDEN_JIT_PRESSURE bits=32 core=%u capacity=%u remaining=%zu\n", unsigned(conf.processor_id), unsigned(conf.code_cache_size), block_of_code.SpaceRemaining());
+#endif // PS5
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
         }
@@ -204,7 +214,14 @@ private:
         ir_block.Reset(arch_descriptor);
         A32::Translate(ir_block, arch_descriptor, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
         Optimization::Optimize(ir_block, conf, polyfill_options);
+#if !defined(__PROSPERO__) // not PS5
         return emitter.Emit(ir_block);
+#else // PS5
+        const auto emitted = emitter.Emit(ir_block);
+        if (eden_jit_block)
+            eden_jit_block(unsigned(conf.processor_id), descriptor.Value(), reinterpret_cast<const void*>(emitted.entrypoint), emitted.size);
+        return emitted;
+#endif // PS5
     }
 
     void PerformRequestedCacheInvalidation(HaltReason hr) {

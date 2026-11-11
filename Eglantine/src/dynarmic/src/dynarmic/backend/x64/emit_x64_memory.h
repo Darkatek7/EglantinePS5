@@ -74,12 +74,12 @@ void EmitDetectMisalignedVAddr(BlockOfCode& code, EmitContext& ctx, size_t bitsi
 }
 
 template<typename EmitContext>
-Xbyak::RegExp EmitVAddrLookup(BlockOfCode& code, EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr);
+Xbyak::RegExp EmitVAddrLookup(BlockOfCode& code, EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr, std::optional<std::pair<Xbyak::Reg64, Xbyak::Reg64>> scratch = std::nullopt);
 
 template<>
-[[maybe_unused]] Xbyak::RegExp EmitVAddrLookup<A32EmitContext>(BlockOfCode& code, A32EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr) {
-    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
-    const Xbyak::Reg64 tmp = ctx.conf.absolute_offset_page_table && ctx.conf.page_table_pointer_mask == 0 ? page : ctx.reg_alloc.ScratchGpr(code);
+[[maybe_unused]] Xbyak::RegExp EmitVAddrLookup<A32EmitContext>(BlockOfCode& code, A32EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr, std::optional<std::pair<Xbyak::Reg64, Xbyak::Reg64>> scratch) {
+    const Xbyak::Reg64 page = scratch ? scratch->first : ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 tmp = scratch ? scratch->second : ctx.conf.absolute_offset_page_table && (ctx.conf.page_table_pointer_mask == 0 || (ctx.conf.page_table_pointer_mask == 0x00fffffffffff000ULL && ctx.conf.page_table_sign_extension == 8)) ? page : ctx.reg_alloc.ScratchGpr(code);
 
     EmitDetectMisalignedVAddr(code, ctx, bitsize, abort, vaddr, tmp);
 
@@ -95,9 +95,22 @@ template<>
 
     // check for marked bit, use as unmapped if marked
 	if (ctx.conf.page_table_marked_bit) {
-        code.bt(page, *ctx.conf.page_table_marked_bit);
-        code.jc(abort, code.T_NEAR);
+        if (*ctx.conf.page_table_marked_bit == 0) {
+            code.test(page.cvt32(), 1);
+            code.jnz(abort, code.T_NEAR);
+        } else {
+            code.bt(page, *ctx.conf.page_table_marked_bit);
+            code.jc(abort, code.T_NEAR);
+        }
 	}
+    // Eden packs pointer bits 12..55. Sign extension removes the upper
+    // attributes first, leaving a page mask that fits an x86 immediate.
+    if (ctx.conf.page_table_pointer_mask == 0x00fffffffffff000ULL &&
+        ctx.conf.page_table_sign_extension == 8) {
+        code.shl(page, 8);
+        code.sar(page, 8);
+        code.and_(page, -4096);
+    } else {
     // mask away attributes
     if (ctx.conf.page_table_pointer_mask == 0) {
         code.test(page, page);
@@ -112,6 +125,7 @@ template<>
         code.shl(page, 63 - int(*ctx.conf.page_table_sign_extension));
         code.sar(page, 63 - int(*ctx.conf.page_table_sign_extension));
     }
+    }
 
     code.jz(abort, code.T_NEAR);
     if (ctx.conf.absolute_offset_page_table) {
@@ -123,12 +137,12 @@ template<>
 }
 
 template<>
-[[maybe_unused]] Xbyak::RegExp EmitVAddrLookup<A64EmitContext>(BlockOfCode& code, A64EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr) {
+[[maybe_unused]] Xbyak::RegExp EmitVAddrLookup<A64EmitContext>(BlockOfCode& code, A64EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr, std::optional<std::pair<Xbyak::Reg64, Xbyak::Reg64>> scratch) {
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_table_const_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
 
-    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
-    const Xbyak::Reg64 tmp = ctx.conf.absolute_offset_page_table && ctx.conf.page_table_pointer_mask == 0 ? page : ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 page = scratch ? scratch->first : ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 tmp = scratch ? scratch->second : ctx.conf.absolute_offset_page_table && (ctx.conf.page_table_pointer_mask == 0 || (ctx.conf.page_table_pointer_mask == 0x00fffffffffff000ULL && ctx.conf.page_table_sign_extension == 8)) ? page : ctx.reg_alloc.ScratchGpr(code);
 
     EmitDetectMisalignedVAddr(code, ctx, bitsize, abort, vaddr, tmp);
 
@@ -170,9 +184,22 @@ template<>
 
     // check for marked bit, use as unmapped if marked
     if (ctx.conf.page_table_marked_bit) {
-        code.bt(page, *ctx.conf.page_table_marked_bit);
-        code.jc(abort, code.T_NEAR);
+        if (*ctx.conf.page_table_marked_bit == 0) {
+            code.test(page.cvt32(), 1);
+            code.jnz(abort, code.T_NEAR);
+        } else {
+            code.bt(page, *ctx.conf.page_table_marked_bit);
+            code.jc(abort, code.T_NEAR);
+        }
     }
+    // Eden packs pointer bits 12..55. Sign extension removes the upper
+    // attributes first, leaving a page mask that fits an x86 immediate.
+    if (ctx.conf.page_table_pointer_mask == 0x00fffffffffff000ULL &&
+        ctx.conf.page_table_sign_extension == 8) {
+        code.shl(page, 8);
+        code.sar(page, 8);
+        code.and_(page, -4096);
+    } else {
     // mask away attributes
     if (ctx.conf.page_table_pointer_mask == 0) {
         code.test(page, page);
@@ -187,6 +214,7 @@ template<>
         code.shl(page, *ctx.conf.page_table_sign_extension);
         code.sar(page, *ctx.conf.page_table_sign_extension);
     }
+    }
 
     code.jz(abort, code.T_NEAR);
     if (ctx.conf.absolute_offset_page_table) {
@@ -195,6 +223,90 @@ template<>
     code.mov(tmp, vaddr);
     code.and_(tmp, static_cast<u32>(page_table_const_mask));
     return page + tmp;
+#if !defined(EDEN_A32_FASTMEM) // PS5 without the A32 fastmem window
+#else // PS5
+}
+
+// Checked A32 fastmem: see headless/checked-fastmem.cmake.
+constexpr int checked_map_bytes = 1 << 20;
+constexpr u8 checked_read_blocked = 1, checked_write_blocked = 2;
+
+inline void EmitCheckedFastmemTest(BlockOfCode& code, Xbyak::Reg64 vaddr, Xbyak::Reg64 index, u8 blocked_bit, Xbyak::Label& blocked) {
+    code.mov(index.cvt32(), vaddr.cvt32());
+    code.shr(index.cvt32(), int(page_table_const_bits));
+    code.test(code.byte[r13 + index - checked_map_bytes], blocked_bit);
+    code.jnz(blocked, code.T_NEAR);
+}
+
+// EmitVAddrLookup<A32EmitContext> for code inside a deferred block (instantiated for A32
+// only): the misalignment check is inline because deferred emits cannot register more.
+template<typename EmitContext>
+Xbyak::RegExp EmitCheckedFallbackLookup(BlockOfCode& code, EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr, Xbyak::Reg64 page) {
+    ASSERT(ctx.conf.absolute_offset_page_table);
+    if (bitsize != 8 && (ctx.conf.detect_misaligned_access_via_page_table & bitsize) != 0) {
+        const u32 align_mask = u32(bitsize / 8 - 1);
+        Xbyak::Label aligned;
+        code.test(vaddr, align_mask);
+        code.jz(aligned, code.T_NEAR);
+        if (ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary) {
+            const u32 page_align_mask = u32(page_table_const_size - 1) & ~align_mask;
+            code.mov(page, vaddr);
+            code.and_(page, page_align_mask);
+            code.cmp(page, page_align_mask);
+            code.je(abort, code.T_NEAR);
+        } else {
+            code.jmp(abort, code.T_NEAR);
+        }
+        code.L(aligned);
+    }
+    code.mov(page, vaddr);
+    code.shr(page, int(page_table_const_bits));
+    if (ctx.conf.page_table_log2_stride <= 3) {
+        code.mov(page, qword[r14 + page * (1 << ctx.conf.page_table_log2_stride)]);
+    } else {
+        code.shl(page, int(ctx.conf.page_table_log2_stride));
+        code.mov(page, qword[r14 + page]);
+    }
+    if (ctx.conf.page_table_marked_bit) {
+        if (*ctx.conf.page_table_marked_bit == 0) {
+            code.test(page.cvt32(), 1);
+            code.jnz(abort, code.T_NEAR);
+        } else {
+            code.bt(page, *ctx.conf.page_table_marked_bit);
+            code.jc(abort, code.T_NEAR);
+        }
+    }
+    if (ctx.conf.page_table_pointer_mask == 0x00fffffffffff000ULL && ctx.conf.page_table_sign_extension == 8) {
+        code.shl(page, 8);
+        code.sar(page, 8);
+        code.and_(page, -4096);
+    } else {
+        ASSERT(ctx.conf.page_table_pointer_mask == 0 || std::in_range<s32>(ctx.conf.page_table_pointer_mask));
+        if (ctx.conf.page_table_pointer_mask == 0) {
+            code.test(page, page);
+        } else {
+            code.and_(page, ctx.conf.page_table_pointer_mask);
+        }
+        if (ctx.conf.page_table_sign_extension) {
+            code.shl(page, *ctx.conf.page_table_sign_extension);
+            code.sar(page, *ctx.conf.page_table_sign_extension);
+        }
+    }
+    code.jz(abort, code.T_NEAR);
+    return page + vaddr;
+#endif // PS5
+}
+
+template<typename EmitContext>
+Xbyak::RegExp EmitExclusiveVAddrLookup(BlockOfCode& code, EmitContext& ctx, size_t bitsize,
+        Xbyak::Label& abort, Xbyak::Reg64 vaddr, Xbyak::Reg64 page, Xbyak::Reg64 tmp) {
+    if (bitsize > 8) {
+        code.test(vaddr, u32(bitsize / 8 - 1));
+        code.jnz(abort, code.T_NEAR);
+    }
+    // Natural alignment excludes page crossings, including CMPXCHG16B's
+    // stricter alignment requirement. Skip the duplicate generic check.
+    return EmitVAddrLookup(code, ctx, 8, abort, vaddr, std::make_optional(std::pair{page, tmp}));
 }
 
 template<typename EmitContext>
@@ -412,8 +524,10 @@ void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak:
     code.mov(tmp, 0xDEAD'DEAD'DEAD'DEAD);
     const size_t processor_count = GetExclusiveMonitorProcessorCount(conf.global_monitor);
     for (size_t processor_index = 0; processor_index < processor_count; processor_index++) {
-        if (processor_index == conf.processor_id) {
-            continue;
+        if constexpr (!requires(const UserConfig& c) { c.tpidr_el0; }) {
+            if (processor_index == conf.processor_id) {
+                continue;
+            }
         }
         Xbyak::Label ok;
         code.mov(pointer, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));

@@ -1,3 +1,18 @@
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <set>
+#include <utility>
+#include "dynarmic/frontend/A32/a32_location_descriptor.h"
+#include "dynarmic/frontend/A64/a64_location_descriptor.h"
+#include "dynarmic/interface/A32/a32.h"
+#include "dynarmic/interface/A64/a64.h"
+#define EDEN_FASTMEM_A64_UNIT 1
+#define EDEN_EXCLUSIVE_ADDRESS(reg) code.mov(reg, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_exclusive_address)])
+#define EDEN_EXCLUSIVE_VALUE(reg) code.mov(reg, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_exclusive_value)])
+#define EDEN_CONF_ARG() code.mov(code.ABI_PARAM1, code.qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_conf)])
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -430,6 +445,33 @@ void A64EmitX64::EmitCheckMemoryAbort(A64EmitContext&, IR::Inst* inst, Xbyak::La
     code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
     code.ForceReturnFromRunCode();
     code.L(skip);
+}
+
+// the direct-table value for a group of accesses (headless/dynarmic/page-reuse.cmake):
+// 0 when its span crosses a page boundary or leaves the address space, or when the page must
+// take the callback path.
+void A64EmitX64::EmitA64EdenPageLookup(A64EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    const u32 span = static_cast<u32>(args[1].GetImmediateU64());
+    const Xbyak::Reg64 host = ctx.reg_alloc.UseScratchGpr(code, args[0]);
+    const Xbyak::Reg64 offset = ctx.reg_alloc.ScratchGpr(code);
+    const size_t valid_page_index_bits = conf.page_table_address_space_bits - page_table_const_bits;
+    SharedLabel none = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
+    code.mov(offset.cvt32(), host.cvt32());
+    code.and_(offset.cvt32(), static_cast<u32>(page_table_const_size - 1));
+    code.cmp(offset.cvt32(), static_cast<u32>(page_table_const_size - span));
+    code.ja(*none, code.T_NEAR);
+    code.shr(host, int(page_table_const_bits));
+    code.test(host, u32(-(1 << valid_page_index_bits)));
+    code.jnz(*none, code.T_NEAR);
+    code.mov(host, code.qword[r14 + host * 8]);
+    code.L(*end);
+    ctx.deferred_emits.emplace_back([=, this] {
+        code.L(*none);
+        code.xor_(host.cvt32(), host.cvt32());
+        code.jmp(*end, code.T_NEAR);
+    });
+    ctx.reg_alloc.DefineValue(code, inst, host);
 }
 
 }  // namespace Dynarmic::Backend::X64

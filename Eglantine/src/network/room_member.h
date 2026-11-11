@@ -7,6 +7,7 @@
 #pragma once
 
 #include <functional>
+#include <stop_token>
 #include <memory>
 #include <string>
 #include <vector>
@@ -126,6 +127,7 @@ public:
      * Returns the status of our connection to the room.
      */
     State GetState() const;
+    int GetPingMilliseconds() const;
 
     /**
      * Returns information about the members in the room we're currently connected to.
@@ -163,7 +165,8 @@ public:
     void Join(const std::string& nickname, const char* server_addr = "127.0.0.1",
               u16 server_port = DefaultRoomPort, u16 client_port = 0,
               const IPv4Address& preferred_fake_ip = NoPreferredIP,
-              const std::string& password = "", const std::string& token = "");
+              const std::string& password = "", const std::string& token = "",
+              std::stop_token stop = {});
 
     /**
      * Sends a Proxy packet to the room.

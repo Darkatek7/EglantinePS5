@@ -1,3 +1,7 @@
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -36,8 +40,19 @@ Result IFile::Read(
 
     // Read the data from the Storage backend
     const ReadTraceScope trace{ReadTraceSource::File, size};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+    const auto fs_start = ::Eden::Performance::NowNs();
+    const Result fs_result =
+        backend->Read(reinterpret_cast<size_t*>(out_size.Get()), offset, out_buffer.data(), size);
+    ::Eden::Performance::AddSince(::Eden::Performance::guest_fs_file, fs_start);
+    ::Eden::Performance::guest_fs_file_bytes.fetch_add(static_cast<unsigned long long>(*out_size.Get()), std::memory_order_relaxed);
+    // Few per boot (save data): every read with its result.
+    LOG_WARNING(Service_FS, "EDEN_FS_FILE_READ offset={:#x} size={} read={} result={:#x} ns={}", offset, size, *out_size.Get(), fs_result.raw, ::Eden::Performance::NowNs() - fs_start);
+    R_RETURN(fs_result);
+#else // PS5
     R_RETURN(
         backend->Read(reinterpret_cast<size_t*>(out_size.Get()), offset, out_buffer.data(), size));
+#endif // PS5
 }
 
 Result IFile::Write(

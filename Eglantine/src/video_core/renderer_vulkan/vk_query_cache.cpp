@@ -31,6 +31,8 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
+#include "dev_vulkan.h"
+#include "performance.h"
 
 namespace Vulkan {
 
@@ -1390,6 +1392,15 @@ struct QueryCacheRuntimeImpl {
             .pQueueFamilyIndices = nullptr,
         };
         hcr_resolve_buffer = memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::DeviceLocal);
+        if (device.IsExtConditionalRendering() && ::Eden::DevVulkan::hcr_mode == 2) {
+            VkBufferCreateInfo constant_ci = buffer_ci;
+            constant_ci.size = 2 * sizeof(u32);
+            constant_ci.usage = VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT;
+            hcr_constant_buffer = memory_allocator.CreateBuffer(constant_ci, MemoryUsage::Upload);
+            const u32 predicates[2]{0, 1};
+            std::memcpy(hcr_constant_buffer.Mapped().data(), predicates, sizeof(predicates));
+            hcr_constant_buffer.Flush();
+        }
     }
 
     VideoCore::RasterizerInterface* rasterizer;
@@ -1416,6 +1427,7 @@ struct QueryCacheRuntimeImpl {
     // Host conditional rendering data
     std::optional<ConditionalRenderingResolvePass> conditional_resolve_pass;
     vk::Buffer hcr_resolve_buffer;
+    vk::Buffer hcr_constant_buffer; // hcr=cpu: predicates 0 and 1
     VkConditionalRenderingBeginInfoEXT hcr_setup;
     VkBuffer hcr_buffer;
     size_t hcr_offset;

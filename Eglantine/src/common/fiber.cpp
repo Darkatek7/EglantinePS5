@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/fiber_stack.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -28,7 +32,11 @@ struct Fiber::FiberImpl {
     // Left uninitialized: the host gives a stack's pages memory only as they are used. Zero-filled
     // std::arrays (and a second stack nothing switched to) made every fiber, one per guest thread,
     // hold 4 MiB: ~750 MiB for title 1's ~190 threads.
+#if !defined(__PROSPERO__) // not PS5
     std::unique_ptr<u8[]> stack;
+#else // PS5
+    ::Eden::FiberStack stack;
+#endif // PS5
     u32 canary_2 = CANARY_VALUE;
 
     boost::context::detail::fcontext_t context{};
@@ -50,8 +58,13 @@ void Fiber::SetRewindPoint(std::function<void()>&& rewind_func) {
 
 Fiber::Fiber(std::function<void()>&& entry_point_func) : impl{std::make_unique<FiberImpl>()} {
     impl->entry_point = std::move(entry_point_func);
+#if !defined(__PROSPERO__) // not PS5
     impl->stack.reset(new u8[DEFAULT_STACK_SIZE]);
     impl->stack_limit = impl->stack.get();
+#else // PS5
+    impl->stack.Allocate(DEFAULT_STACK_SIZE);
+    impl->stack_limit = impl->stack.data();
+#endif // PS5
     u8* stack_base = impl->stack_limit + DEFAULT_STACK_SIZE;
     impl->context = boost::context::detail::make_fcontext(stack_base, DEFAULT_STACK_SIZE, [](boost::context::detail::transfer_t transfer) -> void {
         auto* fiber = static_cast<Fiber*>(transfer.data);
@@ -90,10 +103,11 @@ void Fiber::Exit() {
 void Fiber::YieldTo(std::weak_ptr<Fiber> weak_from, Fiber& to) {
     to.impl->guard.lock();
     to.impl->previous_fiber = weak_from.lock();
+    ASSERT(to.impl->previous_fiber);
+    weak_from.reset();
 
     auto transfer = boost::context::detail::jump_fcontext(to.impl->context, &to);
-    // "from" might no longer be valid if the thread was killed
-    if (auto from = weak_from.lock()) {
+    if (auto* from = static_cast<Fiber*>(transfer.data)) {
         if (from->impl->previous_fiber == nullptr) {
             ASSERT(false && "previous_fiber is nullptr!");
         } else {

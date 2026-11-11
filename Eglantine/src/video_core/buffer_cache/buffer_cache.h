@@ -23,6 +23,7 @@
 
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "performance.h"
 #include "video_core/buffer_cache/multi_range_refresh.h"
 #include "video_core/buffer_cache/uniform_stream_reuse.h"
 #include "video_core/gpu_split.h"
@@ -153,7 +154,7 @@ void BufferCache<P>::TickFrame() {
         }
         uploaded_buffer_ranges.clear();
     }
-    if (static u64 frames{}; ++frames % 600 == 0) {
+    if (static u64 frames{}; ++frames % 60 == 0) {
         u64 total{};
         size_t count{};
         std::vector<std::pair<u64, VAddr>> largest;
@@ -1623,6 +1624,7 @@ u64 BufferCache<P>::KeptGraphicsBindingsHash(bool vertex, bool storage, bool tex
 
 template <class P>
 void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
+    long long since_geo = ::Eden::Performance::MarkStart();
     if (is_indexed) {
         BindHostIndexBuffer();
     } else if constexpr (!HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
@@ -1633,11 +1635,15 @@ void BufferCache<P>::BindHostGeometryBuffers(bool is_indexed) {
                                         draw_state.vertex_buffer.count);
         }
     }
+    ::Eden::Performance::Mark(::Eden::Performance::geo_index, since_geo);
     BindHostVertexBuffers();
+    ::Eden::Performance::Mark(::Eden::Performance::geo_vertex, since_geo);
     BindHostTransformFeedbackBuffers();
+    ::Eden::Performance::Mark(::Eden::Performance::geo_xf, since_geo);
     if (current_draw_indirect) {
         BindHostDrawIndirectBuffers();
     }
+    ::Eden::Performance::Mark(::Eden::Performance::geo_indirect, since_geo);
 }
 
 template <class P>
@@ -2957,6 +2963,7 @@ void BufferCache<P>::BindHostComputeTextureBuffers() {
 
 template <class P>
 void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
+    long long since_upd = ::Eden::Performance::MarkStart();
     graphics_segments.clear();
     BufferOperations([&]() {
         if (is_indexed) {
@@ -2964,14 +2971,17 @@ void BufferCache<P>::DoUpdateGraphicsBuffers(bool is_indexed) {
         }
         UpdateVertexBuffers();
         UpdateTransformFeedbackBuffers();
+        ::Eden::Performance::Mark(::Eden::Performance::upd_state, since_upd);
         for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
             UpdateUniformBuffers(stage);
             UpdateStorageBuffers(stage);
             UpdateTextureBuffers(stage);
         }
+        ::Eden::Performance::Mark(::Eden::Performance::upd_stage, since_upd);
         if (current_draw_indirect) {
             UpdateDrawIndirect();
         }
+        ::Eden::Performance::Mark(::Eden::Performance::upd_indirect, since_upd);
         RefreshMultiRangeSegments(graphics_segments);
     });
 }

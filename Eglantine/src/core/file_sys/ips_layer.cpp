@@ -120,70 +120,57 @@ std::array<u8, 32> IPSwitchCompiler::GetBuildID() const {
     return nso_build_id;
 }
 
+// A patch record is its offset in hex digits, blanks, then the value: an even number of hex digits or
+// quoted text. Patch files also carry credits and links after their records; the reference tool
+// skips those, and reading them as records wrote stray bytes over the start of the game's code.
+static bool IsPatchRecord(std::string_view line) {
+    std::size_t at = 0;
+    while (at < line.size() && std::isxdigit(static_cast<unsigned char>(line[at]))) ++at;
+    if (at == 0 || at > 16 || at == line.size() || (line[at] != ' ' && line[at] != '\t')) return false;
+    while (at < line.size() && (line[at] == ' ' || line[at] == '\t')) ++at;
+    if (at == line.size()) return false;
+    if (line[at] == '"' || line[at] == '\'') return true;
+    const std::size_t value = at;
+    while (at < line.size() && std::isxdigit(static_cast<unsigned char>(line[at]))) ++at;
+    return at == line.size() && (at - value) % 2 == 0;
+}
+
+// The flags a patch file may carry. An author's "@name" in the credits is not one: taken by its
+// second letter alone it could end the file early, flip the byte order or replace the build ID.
+static bool IsPatchFlag(std::string_view line) {
+    static constexpr std::string_view kFlags[] = {"@nsobid-", "@stop", "@enabled", "@disabled", "@flag ",
+                                                  "@little-endian", "@big-endian"};
+    for (const std::string_view flag : kFlags) {
+        bool same = line.size() >= flag.size();
+        for (std::size_t i = 0; same && i < flag.size(); ++i)
+            same = std::tolower(static_cast<unsigned char>(line[i])) == flag[i];
+        if (same) return true;
+    }
+    return false;
+}
+
 static IPSwitchRecord EscapeStringSequences(std::string_view sv) {
     IPSwitchRecord r{};
     for (auto it = sv.cbegin(); it < sv.cend(); ) {
         if (*it == '\\' && it + 1 < sv.cend()) {
-            r.data.push_back([it]() {
-                switch (it[1]) {
-                case 'a': return '\a';
-                case 'b': return '\b';
-                // '\e' is a GNU extension: MSVC compiles it as 'e' (0x65), not ESC (0x1b).
-                case 'e': return '\x1b';
-                case 'f': return '\f';
-                case 'n': return '\n';
-                case 'r': return '\r';
-                case 't': return '\t';
-                case 'v': return '\v';
-                case '?': return '\?';
-                default: return it[1];
-                }
-            }());
+            switch (it[1]) {
+            case 'a': r.data.push_back('\a'); break;
+            case 'b': r.data.push_back('\b'); break;
+            case 'e': r.data.push_back('\x1b'); break;
+            case 'f': r.data.push_back('\f'); break;
+            case 'n': r.data.push_back('\n'); break;
+            case 'r': r.data.push_back('\r'); break;
+            case 't': r.data.push_back('\t'); break;
+            case 'v': r.data.push_back('\v'); break;
+            default: r.data.push_back(static_cast<uint8_t>(it[1])); break;
+            }
             it += 2;
         } else {
-            r.data.push_back(*it);
+            r.data.push_back(static_cast<uint8_t>(*it));
             ++it;
         }
     }
     return r;
-}
-
-static bool IsHexString(std::string_view sv) {
-    return !sv.empty() && std::all_of(sv.cbegin(), sv.cend(), [](char c) {
-        return std::isxdigit(static_cast<unsigned char>(c)) != 0;
-    });
-}
-
-// A record is a hex offset followed by a quoted string or a hex value.
-static bool IsPatchRecord(std::string_view line) {
-    const auto offset_end = line.find_first_of(" \t\"'");
-    if (offset_end == std::string_view::npos) {
-        return false;
-    }
-    auto offset = line.substr(0, offset_end);
-    if (offset.starts_with("0x") || offset.starts_with("0X")) {
-        offset.remove_prefix(2);
-    }
-    if (!IsHexString(offset)) {
-        return false;
-    }
-    const auto value_start = line.find_first_not_of(" \t", offset_end);
-    if (value_start == std::string_view::npos) {
-        return false;
-    }
-    const auto value = line.substr(value_start);
-    if (value[0] == '"' || value[0] == '\'') {
-        // The closing quote must end the line, as comments are already stripped.
-        for (size_t i = 1; i < value.size(); ++i) {
-            if (value[i] == '\\') {
-                ++i;
-            } else if (value[i] == value[0]) {
-                return i + 1 == value.size();
-            }
-        }
-        return false;
-    }
-    return value.find_first_not_of("0123456789abcdefABCDEF \t") == std::string_view::npos;
 }
 
 void IPSwitchCompiler::Parse(std::span<u8 const> bytes) {
@@ -197,6 +184,7 @@ void IPSwitchCompiler::Parse(std::span<u8 const> bytes) {
         // IPSwitch is case insensitive
         // Yes this is how the logic goes for the main reference parsers!
         if (line.size() > 2 && line[0] == '@') {
+            if (!IsPatchFlag(line)) return true;
             switch (line[1]) {
             // yes, @nsobid too -- NSO Build ID Specifier
             case 'n':
@@ -240,6 +228,8 @@ void IPSwitchCompiler::Parse(std::span<u8 const> bytes) {
                 LOG_WARNING(Loader, "Unknown flag {}", line);
                 break;
             }
+        } else if (!IsPatchRecord(line)) {
+            // Credits, links, anything that is not a record.
         } else if (patches.empty()) {
             LOG_WARNING(Loader, "Invalid line not in a patch {}", line);
         } else if (!IsPatchRecord(line)) {

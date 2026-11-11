@@ -1,3 +1,4 @@
+#include "performance.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -824,7 +825,7 @@ void ASTCDecoderPass::AssembleInto(const VideoCommon::ImageInfo& info, u32 skip,
     if (flush_only) {
         scheduler.Flush();
     } else {
-        scheduler.Finish();
+        { auto timer = Eden::Performance::VulkanTimer(12); scheduler.Flush(); }
     }
     const auto end = std::chrono::steady_clock::now();
     static u32 decodes{};

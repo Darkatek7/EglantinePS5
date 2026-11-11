@@ -30,6 +30,9 @@
 #include "video_core/post_processing/fx_chain.h"
 #endif
 #include "video_core/renderer_vulkan/renderer_vulkan.h"
+#include "display_refresh.h"
+#include "diagnostics.h"
+#include "hud.h"
 #include "video_core/renderer_vulkan/vk_blit_screen.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -206,6 +209,7 @@ try
                       : std::string{},
         .api = "Vulkan",
     };
+    PresentLoading();
     Report();
 } catch (const vk::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Vulkan initialization failed with error: {}", exception.what());
@@ -248,7 +252,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(),
                                present_manager.SwapchainImageCount(),
-                               swapchain.GetImageViewFormat());
+                               swapchain.GetImageViewFormat(), true);
 
 #ifdef HAS_LSFG
     void(frame_gen.WantedGenerations(present_manager.MaxExtraFrames()));
@@ -263,6 +267,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         frame_gen.GenerateInto(device, generated, generation);
         scheduler.Flush(*generated->render_ready);
         present_manager.Present(generated);
+        Eden::CountPresentedFrame();
     }
 #endif
 
@@ -308,6 +313,18 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
 }
 
+// Runs on the existing GPU worker, before the first guest Composite. Reuse its
+// swapchain and composition pass without guest captures or FPS notifications.
+void RendererVulkan::PresentLoading() {
+    Frame* frame = present_manager.GetRenderFrame();
+    scheduler.RequestOutsideRenderPassOperationContext();
+    blit_swapchain.DrawToFrame(device, rasterizer, frame, {},
+                              render_window.GetFramebufferLayout(), swapchain.GetImageCount(),
+                              swapchain.GetImageViewFormat(), true);
+    scheduler.Flush(*frame->render_ready);
+    present_manager.Present(frame);
+}
+
 void RendererVulkan::Report() const {
     using namespace Common::Literals;
 
@@ -345,7 +362,7 @@ vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConf
     }();
 
     auto dst_buffer = CreateWrappedBuffer(memory_allocator, buffer_size, MemoryUsage::Download);
-    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format);
+    blit_capture.DrawToFrame(device, rasterizer, &frame, framebuffers, layout, 1, format, true);
 
     scheduler.RequestOutsideRenderPassOperationContext();
     scheduler.Record([&](vk::CommandBuffer cmdbuf) {
@@ -434,3 +451,8 @@ VideoCore::DlssStatus RendererVulkan::GetDlssStatus() const {
 #endif
 
 } // namespace Vulkan
+namespace Eden {
+void PresentVulkanLoading(VideoCore::RendererBase& renderer) {
+    static_cast<Vulkan::RendererVulkan&>(renderer).PresentLoading();
+}
+}

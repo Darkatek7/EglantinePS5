@@ -91,7 +91,7 @@ ResourceManager::~ResourceManager() {
     system.CoreTiming().UnscheduleEvent(mouse_keyboard_update_event);
     system.CoreTiming().UnscheduleEvent(motion_update_event);
     system.CoreTiming().UnscheduleEvent(touch_update_event);
-    input_event->Finalize(system.Kernel());
+    service_context.CloseEvent(input_event);
 };
 
 void ResourceManager::Initialize() {

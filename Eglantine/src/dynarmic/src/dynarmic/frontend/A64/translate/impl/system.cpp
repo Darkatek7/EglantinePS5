@@ -1,3 +1,5 @@
+extern "C" bool eden_light_dmb;  // fast_paths.cmake
+extern "C" unsigned long long eden_dmb_dropped;
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -86,7 +88,13 @@ bool TranslatorVisitor::DSB(Imm<4> /*CRm*/) {
     return true;
 }
 
-bool TranslatorVisitor::DMB(Imm<4> /*CRm*/) {
+bool TranslatorVisitor::DMB(Imm<4> CRm) {
+    // fast_paths.cmake: x86 already keeps the order DMB *LD and DMB *ST ask for.
+    const u32 types = CRm.ZeroExtend() & 3;
+    if ((types == 1 || types == 2) && __atomic_load_n(&eden_light_dmb, __ATOMIC_RELAXED)) {
+        __atomic_fetch_add(&eden_dmb_dropped, 1, __ATOMIC_RELAXED);
+        return true;
+    }
     ir.DataMemoryBarrier();
     return true;
 }

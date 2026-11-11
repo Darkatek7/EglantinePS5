@@ -1,3 +1,8 @@
+#include "headless/macro_native_hook.h"
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -897,6 +902,10 @@ void Maxwell3D::ProcessQueryGet() {
 void Maxwell3D::ProcessQueryCondition() {
     if (rasterizer->AccelerateConditionalRendering()) {
         execute_on = true;
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        ::Eden::Performance::CountCondition(0);
+#else // PS5
+#endif // PS5
         return;
     }
     const GPUVAddr condition_address{regs.render_enable.Address()};
@@ -1621,7 +1630,13 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
     VideoCommon::Nx2Profile::CountMethod(method, false);
     if (!FrontRunOnBack(system, split, fs, engine, start)) {
         VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Macro};
+        ::Eden::MacroNative::Bench native_bench{engine.native_front_matches, engine.native_code, engine.native_code_generation, start, "front"};
+        if (!::Eden::MacroNative::TryRun(engine.native_front_matches, engine.native_code,
+                engine.native_code_generation, start, fs.parameters, std::span<u32>{native_data_ram},
+                [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
+                [&](u32 address, u32 value) { ::Eden::MacroNative::EmitBench emit_bench{native_bench}; FrontWrite(split, fs, address, value, true, true); }, "front")) {
         engine.native_interpreter.active_dram = &native_data_ram;
+
         const auto parameter_count = fs.parameters.size();
         const auto read = [&](u32 address) {
             if (address >= Regs::NUM_REGS) {
@@ -1655,6 +1670,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME (split front) failed: start={:#x}, consumed={}/{}, error={}",
                       start, result.consumed, parameter_count, result.error);
+        }
         }
     }
     fs.parameters.clear();

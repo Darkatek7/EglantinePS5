@@ -1,3 +1,4 @@
+#include <stdexcept>
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -28,6 +29,9 @@ namespace AudioCore::Sink {
 void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
     if (type == StreamType::In)
         return;
+    static_assert(std::is_same_v<decltype(samples_buffer), Common::RingBuffer<s16, 0x10000>>);
+    if (buffer.frames * device_channels > 0x10000 - samples_buffer.Size())
+        throw std::overflow_error("Audio PCM queue capacity exceeded");
 
     constexpr s32 min = (std::numeric_limits<s16>::min)();
     constexpr s32 max = (std::numeric_limits<s16>::max)();
@@ -258,6 +262,7 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
         const size_t frames_available = std::min<u64>(playing_buffer.frames - playing_buffer.frames_played, num_frames - frames_written);
 
         samples_buffer.Pop(&output_buffer[frames_written * frame_size], frames_available * frame_size);
+        if (frames_available) std::memcpy(last_frame.data(), &output_buffer[(frames_written + frames_available - 1) * frame_size], frame_size_bytes);
 
         frames_written += frames_available;
         actual_frames_written += frames_available;
@@ -267,7 +272,7 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
             playing_buffer.consumed = true;
     }
 
-    std::memcpy(last_frame.data(), &output_buffer[(frames_written - 1) * frame_size], frame_size_bytes);
+
 
     // EDEN_NX2_AUDIO_LEVEL: log the output peak about every two seconds (is a game audible?).
     if (static const bool meter = std::getenv("EDEN_NX2_AUDIO_LEVEL") != nullptr;

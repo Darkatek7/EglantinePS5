@@ -1,3 +1,6 @@
+#include "headless/guest_fault.h"
+#include "headless/performance.h"
+#include "core/arm/debug.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -138,6 +141,9 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
                 system.GetDebugger().NotifyThreadStopped(thread);
             } else {
                 interface->LogBacktrace(process);
+                if (prefetch_abort)
+                    ::Eden::RecordGuestFault("guest thread " + Core::GetThreadName(thread).value_or("?") +
+                                             " jumped to an unmapped address");
             }
             thread->RequestSuspend(kernel, SuspendType::Debug);
             return;

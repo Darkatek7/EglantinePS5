@@ -1,3 +1,9 @@
+#include <cstring>
+extern "C" bool eden_checkbit_flags;  // fast_paths.cmake
+extern "C" bool eden_jit_frame_once;  // fast_paths.cmake, read before any JIT exists
+extern "C" unsigned long long eden_checkbit_fused;
+static thread_local const unsigned char* eden_checkbit_mark = nullptr;
+extern "C" bool eden_light_dmb;  // fast_paths.cmake
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -72,7 +78,7 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
 
 A64EmitX64::~A64EmitX64() = default;
 
-A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
+A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block, bool publish) noexcept {
     if (conf.very_verbose_debugging_output) [[unlikely]] {
         std::puts(IR::DumpBlock(block).c_str());
     }
@@ -92,8 +98,11 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     // Start emitting.
     code.align();
     const auto* const entrypoint = code.getCurr();
-    code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+    eden_checkbit_mark = nullptr;
+    if (!eden_jit_frame_once) {
+        code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
     code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    }
 
     DEBUG_ASSERT(block.GetCondition() == IR::Cond::AL);
     typedef void (EmitX64::*EmitHandlerFn)(EmitContext& context, IR::Inst* inst);
@@ -132,7 +141,10 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
             UNREACHABLE();
         }
 opcode_branch:
-        (this->*opcode_handlers[size_t(opcode)])(ctx, &inst);
+        if (opcode == IR::Opcode::PushRSB)
+            A64EmitX64::EmitPushRSB(ctx, &inst);
+        else
+            (this->*opcode_handlers[size_t(opcode)])(ctx, &inst);
         goto finish_this_inst;
 a64_branch:
         (this->*a64_handlers[size_t(opcode) - std::size(opcode_handlers)])(ctx, &inst);
@@ -147,7 +159,7 @@ finish_this_inst:
     reg_alloc.AssertNoMoreUses();
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
-    code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
+    if (!eden_jit_frame_once) code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
@@ -159,11 +171,11 @@ finish_this_inst:
     const A64::LocationDescriptor descriptor{block.Location()};
     const A64::LocationDescriptor end_location{block.EndLocation()};
 
-    const auto range = boost::icl::discrete_interval<u64>::closed(descriptor.PC(), end_location.PC() - 1);
-    block_ranges.AddRange(range, descriptor);
-
-    auto bdesc = RegisterBlock(descriptor, entrypoint, size);
-    code.DisableWriting();
+    // EglantinePS5: the JIT publishes the block in its JitGroup (a64_interface.cpp).
+    eden_range_first = descriptor.PC();
+    eden_range_last = end_location.PC() - 1;
+    const BlockDescriptor bdesc{entrypoint, size};
+    if (publish) code.DisableWriting();
     shared_labels.clear();
     return bdesc;
 }
@@ -225,7 +237,7 @@ void A64EmitX64::GenTerminalHandlers() {
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
         calculate_location_descriptor();
         code.L(rsb_cache_miss);
-        code.mov(r8, u64(fast_dispatch_table.data()));
+        code.mov(r8, qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_fast_dispatch)]);
         //code.mov(r12, qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)]);
         code.mov(r12, rbx);
         if (code.HasHostFeature(HostFeature::SSE42)) {
@@ -261,13 +273,51 @@ void A64EmitX64::EmitPushRSB(EmitContext& ctx, IR::Inst* inst) {
         return;
     }
 
-    EmitX64::EmitPushRSB(ctx, inst);
+    // EglantinePS5: EmitX64::PushRSBHelper with the return target linked through the JitGroup
+    // (jit_group.h): `mov rcx, imm64` with the immediate 8-byte aligned, relinked atomically.
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    ASSERT(args[0].IsImmediate());
+    const IR::LocationDescriptor target{args[0].GetImmediateU64()};
+
+    ctx.reg_alloc.ScratchGpr(code, HostLoc::RCX);
+    const Xbyak::Reg64 loc_desc_reg = ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 index_reg = ctx.reg_alloc.ScratchGpr(code);
+
+    code.mov(index_reg.cvt32(), dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_rsb_ptr]);
+    code.mov(loc_desc_reg, target.Value());
+    const std::size_t misalignment = (reinterpret_cast<std::uintptr_t>(code.getCurr()) + 2) & 7;
+    if (misalignment)
+        code.nop(8 - misalignment);
+    {
+        // Emitted unlinked; linked when the block is registered (JitGroup::Register).
+        const auto* site = code.getCurr<const u8*>();
+        const auto* unlinked = static_cast<const u8*>(code.GetReturnFromRunCodeAddress());
+        code.db(0x48);  // mov rcx, imm64
+        code.db(0xB9);
+        code.dq(reinterpret_cast<u64>(unlinked));
+        eden_pending_sites.push_back({target, {site, code.writableAddress(site), unlinked, JitGroup::SiteKind::Imm64At2}});
+    }
+    code.mov(qword[code.ABI_JIT_PTR + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_location_descriptors], loc_desc_reg);
+    code.mov(qword[code.ABI_JIT_PTR + index_reg * 8 + code.GetJitStateInfo().offsetof_rsb_codeptrs], rcx);
+    // Byte size hack
+    DEBUG_ASSERT(code.GetJitStateInfo().rsb_ptr_mask <= 0xFF);
+    code.add(index_reg.cvt32(), 1); //flags trashed, 1 single byte, haswell doesn't care
+    code.and_(index_reg.cvt32(), u32(code.GetJitStateInfo().rsb_ptr_mask)); //trashes flags
+    // Results ready and sort by least needed: give OOO some break
+    code.mov(dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_rsb_ptr], index_reg.cvt32());
 }
+
 
 void A64EmitX64::EmitA64SetCheckBit(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Reg8 to_store = ctx.reg_alloc.UseGpr(code, args[0]).cvt8();
     code.mov(code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], to_store);
+    eden_checkbit_mark = nullptr;
+    if (__atomic_load_n(&eden_checkbit_flags, __ATOMIC_RELAXED)) {
+        // fast_paths.cmake: ZF for the CheckBit terminal, if nothing else follows.
+        code.test(to_store, to_store);
+        eden_checkbit_mark = code.getCurr();
+    }
 }
 
 void A64EmitX64::EmitA64GetCFlag(A64EmitContext& ctx, IR::Inst* inst) {
@@ -540,7 +590,13 @@ void A64EmitX64::EmitA64DataSynchronizationBarrier(A64EmitContext&, IR::Inst*) {
 }
 
 void A64EmitX64::EmitA64DataMemoryBarrier(A64EmitContext&, IR::Inst*) {
-    code.mfence();
+    // fast_paths.cmake: a locked RMW of the block's own spill slot is a full fence.
+    if (__atomic_load_n(&eden_light_dmb, __ATOMIC_RELAXED)) {
+        code.lock();
+        code.or_(code.dword[rsp], 0);
+    } else {
+        code.mfence();
+    }
 }
 
 void A64EmitX64::EmitA64InstructionSynchronizationBarrier(A64EmitContext& ctx, IR::Inst*) {
@@ -581,7 +637,7 @@ void A64EmitX64::EmitA64GetDCZID(A64EmitContext& ctx, IR::Inst* inst) {
 void A64EmitX64::EmitA64GetTPIDR(A64EmitContext& ctx, IR::Inst* inst) {
     const Xbyak::Reg64 result = ctx.reg_alloc.ScratchGpr(code);
     if (conf.tpidr_el0) {
-        code.mov(result, u64(conf.tpidr_el0));
+        code.mov(result, qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_tpidr_el0)]);
         code.mov(result, qword[result]);
     } else {
         code.xor_(result.cvt32(), result.cvt32());
@@ -592,7 +648,7 @@ void A64EmitX64::EmitA64GetTPIDR(A64EmitContext& ctx, IR::Inst* inst) {
 void A64EmitX64::EmitA64GetTPIDRRO(A64EmitContext& ctx, IR::Inst* inst) {
     const Xbyak::Reg64 result = ctx.reg_alloc.ScratchGpr(code);
     if (conf.tpidrro_el0) {
-        code.mov(result, u64(conf.tpidrro_el0));
+        code.mov(result, qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_tpidrro_el0)]);
         code.mov(result, qword[result]);
     } else {
         code.xor_(result.cvt32(), result.cvt32());
@@ -605,7 +661,7 @@ void A64EmitX64::EmitA64SetTPIDR(A64EmitContext& ctx, IR::Inst* inst) {
     const Xbyak::Reg64 value = ctx.reg_alloc.UseGpr(code, args[0]);
     const Xbyak::Reg64 addr = ctx.reg_alloc.ScratchGpr(code);
     if (conf.tpidr_el0) {
-        code.mov(addr, u64(conf.tpidr_el0));
+        code.mov(addr, qword[code.ABI_JIT_PTR + offsetof(A64JitState, eden_tpidr_el0)]);
         code.mov(qword[addr], value);
     }
 }
@@ -623,29 +679,51 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::ReturnToDispatch, IR::LocationDes
     return true;
 }
 
+// EglantinePS5: direct branches between blocks go through the process's JitGroup (jit_group.h).
+// The branch's 32-bit displacement is 4-byte aligned, so linking it when `next` gets compiled
+// (by any core) and unlinking it when `next` is invalidated are single atomic stores; while
+// unlinked it jumps to a stub that stores next's PC and returns to the dispatcher. Sites are
+// emitted unlinked and resolved when the block is registered.
+enum class EdenLinkCheck { None, Halt, Cycles };
+
+void EdenEmitLink(A64EmitX64& e, IR::LocationDescriptor next, EdenLinkCheck check) {
+    BlockOfCode& code = e.code;
+    const u64 next_pc = A64::LocationDescriptor{next}.PC();
+    if (check == EdenLinkCheck::Halt)
+        code.cmp(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+    else if (check == EdenLinkCheck::Cycles)
+        code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
+    const std::size_t opcode = check == EdenLinkCheck::None ? 1 : 2;
+    const std::size_t misalignment = (reinterpret_cast<std::uintptr_t>(code.getCurr()) + opcode) & 3;
+    if (misalignment)
+        code.nop(4 - misalignment);
+    const auto* site = code.getCurr<const u8*>();
+    Xbyak::Label stub;
+    if (check == EdenLinkCheck::Halt)
+        code.jz(stub, code.T_NEAR);
+    else if (check == EdenLinkCheck::Cycles)
+        code.jg(stub, code.T_NEAR);
+    else
+        code.jmp(stub, code.T_NEAR);
+    if (check != EdenLinkCheck::None) {
+        // Halted, or out of cycles: leave the JIT with next's PC.
+        code.mov(rax, next_pc);
+        code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
+        code.ForceReturnFromRunCode();
+    }
+    code.L(stub);
+    code.mov(rax, next_pc);
+    code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
+    code.ReturnFromRunCode();
+    // Linked when the block is registered (JitGroup::Register), under the group's lock.
+    e.eden_pending_sites.push_back({next, {site, code.writableAddress(site), stub.getAddress(),
+                                           check == EdenLinkCheck::None ? JitGroup::SiteKind::Rel32At1 : JitGroup::SiteKind::Rel32At2}});
+}
+
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
     // Used for patches and linking
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        if (e.conf.enable_cycle_counting) {
-            e.code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
-            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jg);
-            if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
-                e.EmitPatchJg(terminal.next, next_bb->entrypoint);
-            } else {
-                e.EmitPatchJg(terminal.next);
-            }
-        } else {
-            e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
-            e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jz);
-            if (const auto next_bb = e.GetBasicBlock(terminal.next)) {
-                e.EmitPatchJz(terminal.next, next_bb->entrypoint);
-            } else {
-                e.EmitPatchJz(terminal.next);
-            }
-        }
-        e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
-        e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
-        e.code.ForceReturnFromRunCode();
+        EdenEmitLink(e, terminal.next, e.conf.enable_cycle_counting ? EdenLinkCheck::Cycles : EdenLinkCheck::Halt);
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
@@ -656,12 +734,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlock terminal, IR::LocationD
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::BlockLinking) && !is_single_step) {
-        e.AddPatchLocation(terminal.next, EmitX64::PatchKind::Jmp);
-        if (auto next_bb = e.GetBasicBlock(terminal.next)) {
-            e.EmitPatchJmp(terminal.next, next_bb->entrypoint);
-        } else {
-            e.EmitPatchJmp(terminal.next);
-        }
+        EdenEmitLink(e, terminal.next, EdenLinkCheck::None);
     } else {
         e.code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
         e.code.mov(qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
@@ -669,6 +742,7 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::Locat
     }
     return true;
 }
+
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) && !is_single_step) {
@@ -706,7 +780,20 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::If terminal, IR::LocationDescript
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     Xbyak::Label fail;
-    e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
+    // fast_paths.cmake: the setter's test still holds when the only code since is
+    // Emit's frame-pointer restore, mov rbp, [rsp + 0x418].
+    static constexpr unsigned char restore_rbp[] = {0x48, 0x8B, 0xAC, 0x24, 0x18, 0x04, 0x00, 0x00};
+    constexpr bool restore_layout = ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) == 0x418;
+    const unsigned char* const mark = eden_checkbit_mark;
+    eden_checkbit_mark = nullptr;
+    // With the frame pointer set once per entry (jit_frame_once) nothing follows the setter at all.
+    if ((mark && eden_jit_frame_once && e.code.getCurr() == mark) ||
+        (restore_layout && mark && e.code.getCurr() == mark + sizeof(restore_rbp) &&
+         std::memcmp(mark, restore_rbp, sizeof(restore_rbp)) == 0)) {
+        __atomic_fetch_add(&eden_checkbit_fused, 1, __ATOMIC_RELAXED);
+    } else {
+        e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
+    }
     e.code.jz(fail);
     e.EmitLeafTerminal(terminal.then_, initial_location, is_single_step);
     e.code.L(fail);
@@ -797,9 +884,8 @@ void A64EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
 void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
     EmitX64::Unpatch(location);
     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
-        code.DisableWriting();
+        // Prelude occupies separate RX pages throughout guest-code patching.
         (*fast_dispatch_table_lookup)(location.Value()) = {};
-        code.EnableWriting();
     }
 }
 

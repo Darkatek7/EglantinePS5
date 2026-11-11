@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include <cstdio>
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -98,10 +102,46 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
 
     auto const last_segment_it = &nso_header.segments[nso_header.segments.size() - 1];
     // Build program image directly in codeset memory :)
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    const u64 initialized_size = module_start + u64(last_segment_it->location) + u64(last_segment_it->size);
+    const u64 argument_size = should_pass_arguments && !Settings::values.program_args.GetValue().empty()
+        ? NSO_ARGUMENT_DATA_ALLOCATION_SIZE : 0;
+    const u64 final_size = (initialized_size + argument_size + u64(last_segment_it->bss_size) + 0xFFF) & ~u64(0xFFF);
+    if (!final_size || final_size > UINT32_MAX) return std::nullopt;
+    for (size_t i = 0; i < nso_header.segments.size(); ++i) {
+        const auto& segment = nso_header.segments[i];
+        const u64 stored_size = nso_header.IsSegmentCompressed(i)
+            ? u64(nso_header.segments_compressed_size[i]) : u64(segment.size);
+        if ((nso_header.IsSegmentCompressed(i) && (stored_size > INT32_MAX || u64(segment.size) > INT32_MAX)) ||
+            u64(segment.offset) + stored_size > nso_file.GetSize() ||
+            module_start + u64(segment.location) + u64(segment.size) > initialized_size)
+            return std::nullopt;
+    }
+    // PS5 uses Dynarmic, not NCE: a layout query needs no executable bytes.
+#ifdef HAS_NCE
+#error Review PS5 NSO layout-only loading before enabling NCE
+#endif
+    if (!load_into_process) return load_base + final_size;
+    std::fprintf(stderr, "[EglantinePS5] NSO %s image_bytes=%llu bss_bytes=%u\n",
+                 nso_file.GetName().c_str(), static_cast<unsigned long long>(final_size),
+                 static_cast<unsigned>(last_segment_it->bss_size));
+#endif // PS5
     Kernel::CodeSet codeset;
+#if !defined(__PROSPERO__) // not PS5
     codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
+#else // PS5
+    const auto name = nso_file.GetName();
+    // A mod's patch changes code and data, which are here whole; only a dump wants the BSS too.
+    const bool patched = pm && pm->HasNSOPatch(nso_header.build_id, name);
+    const bool full_image = pm && Settings::values.dump_nso;
+    // BSS belongs in guest memory, not a second almost-2-GiB heap buffer.
+    codeset.memory.reserve(full_image ? final_size : initialized_size + argument_size);
+    codeset.memory.resize(initialized_size);
+#endif // PS5
     {
         std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
+#if !defined(__PROSPERO__) // not PS5
         std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
             return a.size < b.size;
         })->size);
@@ -138,7 +178,10 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                     );
                     ASSERT(r == int(segment_size));
                 }
+#else // PS5
+#endif // PS5
 
+#if !defined(__PROSPERO__) // not PS5
                 std::memcpy(
                     codeset.memory.data() + module_start + nso_header.segments[i].location,
                     decompressed_size.data(),
@@ -151,6 +194,27 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                     compressed_data.data(),
                     nso_header.segments[i].size
                 );
+#else // PS5
+        for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
+            auto* destination = codeset.memory.data() + module_start + nso_header.segments[i].location;
+            if (!nso_header.IsSegmentCompressed(i)) {
+                if (nso_file.Read(destination, nso_header.segments[i].size, nso_header.segments[i].offset) != nso_header.segments[i].size) return std::nullopt;
+            } else if (nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset) != nso_header.segments_compressed_size[i]) return std::nullopt;
+            if (nso_header.IsSegmentCompressed(i)) {
+                if (nso_header.IsZBICCompressed()) {
+                    const int r = Common::Compression::DecompressDataZBIC(
+                        std::span<u8>{destination, nso_header.segments[i].size},
+                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i]));
+                    if (r <= 0) return std::nullopt;
+                    // A short segment is zero-filled (upstream Eglantine).
+                    if (static_cast<u32>(r) < nso_header.segments[i].size)
+                        std::fill(destination + r, destination + nso_header.segments[i].size, u8{0});
+                } else {
+                    const int r = Common::Compression::DecompressDataLZ4(destination, nso_header.segments[i].size,
+                        compressed_data.data(), nso_header.segments_compressed_size[i]);
+                    if (r != int(nso_header.segments[i].size)) return std::nullopt;
+                }
+#endif // PS5
             }
             codeset.segments[i].addr = module_start + nso_header.segments[i].location;
             codeset.segments[i].offset = module_start + nso_header.segments[i].location;
@@ -171,15 +235,23 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
 
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
+#if !defined(__PROSPERO__) // not PS5
     codeset.memory.resize(image_size);
+#else // PS5
+    if (full_image) codeset.memory.resize(image_size);
+#endif // PS5
 
     for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);
     }
 
     // Apply patches if necessary
+#if !defined(__PROSPERO__) // not PS5
     const auto name = nso_file.GetName();
     if (pm && (pm->HasNSOPatch(nso_header.build_id, name) || Settings::values.dump_nso)) {
+#else // PS5
+    if (patched || full_image) {
+#endif // PS5
         std::span<u8> patchable_section(codeset.memory.data() + module_start, codeset.memory.size() - module_start);
         std::vector<u8> pi_header(sizeof(NSOHeader) + patchable_section.size());
         std::memcpy(pi_header.data(), &nso_header, sizeof(NSOHeader));
@@ -321,10 +393,31 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
             system.SetApplicationProcessBuildID(nso_header.build_id);
 
         const auto cheats = pm->CreateCheatList(nso_header.build_id);
+#if !defined(__PROSPERO__) // not PS5
         if (!cheats.empty()) {
+#else // PS5
+        if (name == "main") {
+            // The build ID a cheat file for this version of the game is named after.
+            char build[17]{};
+            for (int i = 0; i < 8; ++i)
+                std::snprintf(build + i * 2, 3, "%02X", static_cast<unsigned>(nso_header.build_id[i]));
+            std::fprintf(stderr, "[EglantinePS5] cheats: %zu entries for main (build ID %s) at %#llx (%llu bytes)\n",
+                         cheats.size(), build, static_cast<unsigned long long>(load_base),
+                         static_cast<unsigned long long>(image_size));
+        }
+        if (name == "main" && !cheats.empty()) {
+#endif // PS5
             system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);
         }
     }
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+
+    // Initialize BSS and page padding directly, including reused guest pages.
+    if (codeset.memory.size() < image_size &&
+        !process.GetMemory().ZeroBlock(load_base + codeset.memory.size(), image_size - codeset.memory.size()))
+        return std::nullopt;
+#endif // PS5
 
     // Load codeset for current process
     if (name == "sdk") {

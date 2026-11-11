@@ -1,3 +1,4 @@
+#include "headless/load_address.h"
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -492,8 +493,12 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     code_size += patch_ctx.GetTotalPatchSize();
 
     // TODO: this is bad form of ASLR, it sucks
-    std::uintptr_t aslr_offset = ((::Settings::values.rng_seed_enabled.GetValue()
-        ? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;
+    std::uintptr_t aslr_offset = ((::Eden::code_seed.load() >= 0 ? static_cast<u64>(::Eden::code_seed.load())
+#if !defined(EDEN_A32_FASTMEM) // PS5 without the A32 fastmem window
+        : Common::Random::Random64(0)) << 12) & 0xfff000;
+#else // PS5
+        : Common::Random::Random64(0)) << 14) & 0xffc000;
+#endif // PS5
 
     // Setup the process code layout
     if (process.LoadFromMetadata(system.Kernel(), metadata, code_size, fastmem_base, aslr_offset).IsError()) {

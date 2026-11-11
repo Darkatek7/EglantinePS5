@@ -1,3 +1,13 @@
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+extern "C" bool eden_jit_frame_once;  // headless/dynarmic/fast_paths.cmake
+extern "C" void eden_fast_paths_configure();
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#define EDEN_JIT_ALIAS_NATIVE 1
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -7,6 +17,7 @@
  */
 
 #include "dynarmic/backend/x64/block_of_code.h"
+#include "headless/jit-allocator.h"
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
@@ -90,7 +101,8 @@ void ProtectMemory(const void* base, size_t size, bool is_executable) {
     const size_t iaddr = reinterpret_cast<size_t>(base);
     const size_t roundAddr = iaddr & ~(pageSize - static_cast<size_t>(1));
     const int mode = is_executable ? (PROT_READ | PROT_EXEC) : (PROT_READ | PROT_WRITE);
-    mprotect(reinterpret_cast<void*>(roundAddr), size + (iaddr - roundAddr), mode);
+    const size_t span = (size + (iaddr - roundAddr) + pageSize - 1) & ~(pageSize - 1);
+    if (mprotect(reinterpret_cast<void*>(roundAddr), span, mode) != 0) std::abort();
 #    endif
 }
 #endif
@@ -171,14 +183,22 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
 #ifdef _WIN32
         , &code_memory_allocator)
 #else
-        , nullptr)
+        , EdenJitAllocator())
 #endif
     , constant_pool(*this, CONSTANT_POOL_SIZE)
     , jsi(jsi)
     , cb(std::move(cb))
 {
+    align(sysconf(_SC_PAGESIZE));
+    write_begin = getSize();
+    executable_end = write_begin;
+    if (hasWritableAlias() && mprotect(const_cast<u8*>(getCode()), write_begin, PROT_READ) != 0) std::abort();
     EnableWriting();
     EnsureMemoryCommitted(PRELUDE_COMMIT_SIZE);
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+    std::printf("EDEN_JIT_FEATURES mask=%x cache_bytes=%zu\n", unsigned(GetHostFeatures()), total_code_size);
+#endif // PS5
     GenRunCode(rcp);
 }
 
@@ -187,35 +207,73 @@ bool BlockOfCode::HasHostFeature(HostFeature feature) const noexcept {
 }
 
 void BlockOfCode::PreludeComplete() {
+    align(sysconf(_SC_PAGESIZE));
     prelude_complete = true;
     code_begin = getCurr();
     ClearCache();
     DisableWriting();
 }
 
+// Included in the generated Unix BlockOfCode implementation, inside its namespace.
 void BlockOfCode::EnableWriting() {
-#ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
-#    ifdef _WIN32
-    ProtectMemory(getCode(), committed_size, false);
-#    else
-    ProtectMemory(getCode(), maxSize_, false);
-#    endif
-#endif
+    if (writing) return;
+    ASSERT(getSize() == protection_end);
+    if (hasWritableAlias()) { writing = true; return; }
+    static const size_t page = sysconf(_SC_PAGESIZE);
+    write_begin = getSize() & ~(page - 1);
+    if (write_begin < executable_end)
+        ProtectMemory(getCode() + write_begin, executable_end - write_begin, false);
+    writing = true;
 }
 
 void BlockOfCode::DisableWriting() {
-#ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
-#    ifdef _WIN32
-    ProtectMemory(getCode(), committed_size, true);
-#    else
-    ProtectMemory(getCode(), maxSize_, true);
-#    endif
-#endif
+    if (!writing) return;
+    protection_end = std::max(protection_end, getSize());
+    if (hasWritableAlias()) { writing = false; return; }
+    static const size_t page = sysconf(_SC_PAGESIZE);
+    const size_t end = (protection_end + page - 1) & ~(page - 1);
+    // Publish adjacent patches together, including the append tail when adjacent.
+    std::sort(patch_pages.begin(), patch_pages.end());
+    size_t begin = end, limit = end;
+    for (size_t offset : patch_pages) {
+        if (offset != limit) {
+            if (limit > begin) ProtectMemory(getCode() + begin, limit - begin, true);
+            begin = offset;
+        }
+        limit = offset + page;
+    }
+    if (limit == write_begin) limit = end;
+    else {
+        if (limit > begin) ProtectMemory(getCode() + begin, limit - begin, true);
+        begin = write_begin;
+        limit = end;
+    }
+    if (limit > begin) ProtectMemory(getCode() + begin, limit - begin, true);
+    patch_pages.clear();
+    executable_end = end;
+    writing = false;
 }
 
 void BlockOfCode::ClearCache() {
     ASSERT(prelude_complete);
-    SetCodePtr(code_begin);
+    const bool was_writing = writing;
+    DisableWriting();
+    static const size_t page = sysconf(_SC_PAGESIZE);
+    const size_t begin = reinterpret_cast<const u8*>(code_begin) - getCode();
+    if (hasWritableAlias()) {
+        protection_end = begin;
+        setSize(begin);
+        writing = was_writing;
+        return;
+    }
+    write_begin = begin & ~(page - 1);
+    if (write_begin < executable_end)
+        ProtectMemory(getCode() + write_begin, executable_end - write_begin, false);
+    executable_end = write_begin;
+    protection_end = begin;
+    setSize(begin);
+    writing = true;
+    if (!was_writing) DisableWriting();
 }
 
 size_t BlockOfCode::SpaceRemaining() const {
@@ -227,6 +285,7 @@ size_t BlockOfCode::SpaceRemaining() const {
 }
 
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
+    commitMemory(std::min<size_t>(maxSize_, size_ + codesize));
 #ifdef _WIN32
     if (committed_size < size_ + codesize) {
         const size_t new_committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
@@ -277,6 +336,11 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     // 2. It aligns the stack so that the code the JIT emits can assume
     //    that the stack is appropriately aligned for CALLs.
     ABI_PushCalleeSaveRegistersAndAdjustStack(*this, sizeof(StackLayout));
+    eden_fast_paths_configure();
+    if (eden_jit_frame_once) {
+        mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+        lea(rbp, ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    }
 
     mov(ABI_JIT_PTR, ABI_PARAM1);
     mov(rbx, ABI_PARAM2); // save temporarily in non-volatile register
@@ -301,6 +365,11 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     step_code = getCurr<RunCodeFuncType>();
 
     ABI_PushCalleeSaveRegistersAndAdjustStack(*this, sizeof(StackLayout));
+    eden_fast_paths_configure();
+    if (eden_jit_frame_once) {
+        mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+        lea(rbp, ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    }
 
     mov(ABI_JIT_PTR, ABI_PARAM1);
 
@@ -482,17 +551,34 @@ void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
 
     void* ret = getCurr<void*>();
     size_ += alloc_size;
-    memset(ret, 0, alloc_size);
+    memset(writableAddress(ret), 0, alloc_size);
     return ret;
 }
 
 void BlockOfCode::SetCodePtr(CodePtr code_ptr) {
     // The "size" defines where top_, the insertion point, is.
     size_t required_size = reinterpret_cast<const u8*>(code_ptr) - getCode();
+    ASSERT(writing);
+    ASSERT(!prelude_complete || required_size >= size_t(reinterpret_cast<const u8*>(code_begin) - getCode()));
+    protection_end = std::max(protection_end, getSize());
+    // Backward cursor moves are EmitX64::Patch sites, at most 23 bytes.
+    static const size_t page = sysconf(_SC_PAGESIZE);
+    const size_t patch_end = std::min(write_begin, required_size + 23);
+    size_t first_new = patch_end, last_new = patch_end;
+    for (size_t offset = required_size & ~(page - 1); !hasWritableAlias() && offset < patch_end; offset += page) {
+        if (std::find(patch_pages.begin(), patch_pages.end(), offset) == patch_pages.end()) {
+            patch_pages.push_back(offset);
+            first_new = std::min(first_new, offset);
+            last_new = offset + page;
+        }
+    }
+    if (last_new > first_new) ProtectMemory(getCode() + first_new, last_new - first_new, false);
     setSize(required_size);
+    protection_end = std::max(protection_end, getSize());
 }
 
 void BlockOfCode::EnsurePatchLocationSize(CodePtr begin, size_t size) {
+    ASSERT(size <= 23);
     size_t current_size = getCurr<const u8*>() - reinterpret_cast<const u8*>(begin);
     ASSERT(current_size <= size);
     nop(size - current_size);

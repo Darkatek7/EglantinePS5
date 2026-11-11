@@ -74,6 +74,7 @@ void EmitSpinLockUnlock(Xbyak::CodeGenerator& code, Xbyak::Reg64 ptr, Xbyak::Reg
     code.mfence();
 }
 
+#if !defined(__PROSPERO__) // not PS5
 namespace {
 struct SpinLockImpl {
     void Initialize() noexcept;
@@ -110,14 +111,37 @@ void SpinLockImpl::GlobalInitialize() noexcept {
 }
 }  // namespace
 
+#else // PS5
+// PS5 x64: retain the storage ABI used by generated monitor operations and
+// the original exchange + full-fence unlock ordering. No executable helper
+// allocation or call_once is needed for compiler-provided lock-free atomics.
+static_assert(__atomic_always_lock_free(sizeof(int), nullptr));
+#endif // PS5
 void SpinLock::Lock() noexcept {
+#if !defined(__PROSPERO__) // not PS5
     std::call_once(flag, &SpinLockImpl::GlobalInitialize);
     impl->lock(&storage);
+#else // PS5
+    while (__atomic_exchange_n(&storage, 1, __ATOMIC_SEQ_CST)) {
+        // Poll without repeatedly invalidating the owner's cache line.
+        while (__atomic_load_n(&storage, __ATOMIC_RELAXED))
+            __builtin_ia32_pause();
+    }
+#endif // PS5
 }
 
 void SpinLock::Unlock() noexcept {
+#if !defined(__PROSPERO__) // not PS5
     std::call_once(flag, &SpinLockImpl::GlobalInitialize);
     impl->unlock(&storage);
+#else // PS5
+    __atomic_exchange_n(&storage, 0, __ATOMIC_SEQ_CST);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif // PS5
 }
 
+#if !defined(__PROSPERO__) // not PS5
 }  // namespace Dynarmic
+#else // PS5
+} // namespace Dynarmic
+#endif // PS5

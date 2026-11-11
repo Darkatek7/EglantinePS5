@@ -56,6 +56,18 @@ struct A64JitState {
     std::array<u64, RSB_SIZE> rsb_location_descriptors;
     std::array<u64, RSB_SIZE> rsb_codeptrs;
 
+    // EglantinePS5: what generated code reads instead of embedding it, so that any core can run
+    // code another core compiled (jit_group.h): this core's callbacks and JIT object, TPIDR
+    // registers, exclusive monitor slots, configuration and fast dispatch table.
+    void* eden_callbacks = nullptr;
+    void* eden_jit = nullptr;
+    u64* eden_tpidr_el0 = nullptr;
+    const u64* eden_tpidrro_el0 = nullptr;
+    void* eden_exclusive_address = nullptr;
+    void* eden_exclusive_value = nullptr;
+    const void* eden_conf = nullptr;
+    void* eden_fast_dispatch = nullptr;
+
     u32 GetPstate() const {
         return NZCV::FromX64(cpsr_nzcv);
     }

@@ -122,7 +122,9 @@ std::shared_ptr<Common::DynamicLibrary> OpenLibrary(
     DisableOverwolfLayers();
 #endif
     LOG_DEBUG(Render_Vulkan, "Looking for a Vulkan library");
-#if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
+#if defined(PS5_NATIVE)
+    return std::make_shared<Common::DynamicLibrary>();
+#elif defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
     // Android manages its Vulkan driver from the frontend.
     return context->GetDriverLibrary();
 #else

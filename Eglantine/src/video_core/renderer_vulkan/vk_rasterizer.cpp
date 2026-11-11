@@ -5,6 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "performance.h"
+#include "image_pages.h"
+#include "dev_vulkan.h"
+#include "diagnostics.h"
+#include <filesystem>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -68,6 +73,7 @@
 #include "video_core/renderer_vulkan/vk_update_descriptor.h"
 #include "video_core/shader_cache.h"
 #include "video_core/texture_cache/texture_cache_base.h"
+#include "astc_policy.h"
 #include "video_core/textures/texture.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -780,6 +786,28 @@ bool RasterizerVulkan::TryNx2IndirectReset(bool is_indexed, u32 instance_count) 
     return true;
 }
 
+namespace {
+// GPU thread only: the pipeline PrepareDraw refreshed for the draw in progress.
+GraphicsPipeline* prepared_pipeline = nullptr;
+// The pipeline of the last prepared draw, for the development fault probe.
+GraphicsPipeline* probe_pipeline = nullptr;
+bool SyncProbeActive() {
+    static unsigned poll = 0;
+    static bool active = false;
+    if (!active && ::Eden::DevVulkan::trace_pipelines && (++poll & 255) == 0)
+        active = std::filesystem::exists("/app0/sync-draws.txt");
+    return active;
+}
+void SyncProbe(Scheduler& scheduler, const char* kind, const void* pipeline) {
+    if (!SyncProbeActive()) return;
+    static unsigned long long sequence = 0;
+    char text[96];
+    std::snprintf(text, sizeof(text), "%s #%llu p=%p", kind, ++sequence, pipeline);
+    ::Eden::Report("sync", text);
+    scheduler.Finish();
+}
+} // namespace
+
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_indirect) {
 
@@ -816,11 +844,14 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     }
     fast_draw_verify = fast_draw_on && FastDraw::VerifyEnabled();
     const u64 fast_draw_start = fast_draw_on ? Profile::Now() : 0;
+    const ::Eden::Performance::Timer rasterizer_draw_timer(::Eden::Performance::rasterizer_draw);
+    auto phase = ::Eden::Performance::MarkStart();
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
         FlushWork();
         gpu_memory->FlushCaching();
     }
+    ::Eden::Performance::Mark(::Eden::Performance::draw_flush, phase);
     if (frame_dump.Capturing()) {
         frame_dump.DrainIfFull();
     }
@@ -844,6 +875,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         Profile::Scope scope{Profile::Zone::PipelineLookup};
         return pipeline_cache.CurrentGraphicsPipeline();
     }()};
+    ::Eden::Performance::Mark(::Eden::Performance::draw_pipeline, phase);
     const bool verify_views = verify_pipeline != nullptr && verify_pipeline == pipeline;
     if (verify_pipeline != nullptr) {
         ++fast_draw_stats.verified;
@@ -1028,7 +1060,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         mesh_emulation_groups = groups;
         mesh_emulation_vertices_per_group = pipeline->MeshEmulationVerticesPerGroup();
     }
+    ::Eden::Performance::YieldToGuests();  // a guest thread asleep on a cache lock goes first
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    prepared_pipeline = pipeline;
+    probe_pipeline = pipeline;
+    SCOPE_EXIT {
+        prepared_pipeline = nullptr;
+    };
     // What the next draw's TakeReusableDraw compares with, read once the caches are locked: a
     // break from here on, this draw's own resolve included, ends the delta chain.
     const u64 draw_serial = FastDraw::Serial();
@@ -1538,6 +1576,7 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                 is_indexed ? "vkCmdDrawIndexed" : "vkCmdDraw", params, VK_SUCCESS);
         }
     });
+    SyncProbe(scheduler, "draw", probe_pipeline);
 }
 
 void RasterizerVulkan::DrawIndirect() {
@@ -1812,6 +1851,7 @@ void RasterizerVulkan::CollectIndirectTrace() {
 }
 
 void RasterizerVulkan::DrawTexture() {
+    SCOPE_EXIT { SyncProbe(scheduler, "draw_texture", nullptr); };
 
     SCOPE_EXIT {
         gpu.TickWork();
@@ -1942,6 +1982,7 @@ bool RasterizerVulkan::ClearVolumeSlices(const Framebuffer* framebuffer, u32 fir
 }
 
 void RasterizerVulkan::Clear(u32 layer_count) {
+    SCOPE_EXIT { SyncProbe(scheduler, "clear", nullptr); };
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Clear};
     if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
         const auto& regs = maxwell3d->regs;
@@ -2073,7 +2114,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         clear_rect.rect.offset.x == 0 && clear_rect.rect.offset.y == 0 &&
         clear_rect.rect.extent.width >= render_area.width &&
         clear_rect.rect.extent.height >= render_area.height;
-    const bool can_defer_clear = ENABLE_DEFERRED_CLEAR && (!regs.clear_control.use_scissor || clear_covers_render_area) &&
+    const bool can_defer_clear = ENABLE_DEFERRED_CLEAR && !regs.zpass_pixel_count_enable && (!regs.clear_control.use_scissor || clear_covers_render_area) &&
                                  clear_layers.covers_all_layers &&
                                  !scheduler.IsRenderPassActive() &&
                                  (!use_color || color_full_channels) && ds_deferrable;
@@ -2168,6 +2209,28 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         });
     }
 }
+
+namespace {
+constexpr VkMemoryBarrier COMPUTE_WRITE_BARRIER{
+    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+    .pNext = nullptr,
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
+                     VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                     VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+};
+constexpr VkMemoryBarrier COMPUTE_INPUT_BARRIER{
+    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+    .pNext = nullptr,
+    .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+};
+constexpr VkPipelineStageFlags COMPUTE_CONSUMER_STAGES =
+    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+    VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+    VK_PIPELINE_STAGE_TRANSFER_BIT;
+} // namespace
 
 void RasterizerVulkan::DispatchCompute() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Compute};
@@ -2277,6 +2340,9 @@ void RasterizerVulkan::DispatchCompute() {
             }
             scheduler.TraceGpuWork(cmdbuf, pipeline->ShaderHash(), 0, {}, [&] {
                 cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
+            if (::Eden::DevVulkan::compute_barriers)
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, COMPUTE_CONSUMER_STAGES, 0,
+                                       COMPUTE_WRITE_BARRIER);
             });
         });
         buffer_cache.NoteWorkRecorded(true);
@@ -2524,6 +2590,7 @@ bool RasterizerVulkan::HoldsQueries(DAddr addr, u64 size) {
 }
 
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
+    ::Eden::Performance::Timer guest_read_timer(::Eden::Performance::guest_cpu_read);
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
     {
         std::scoped_lock lock{texture_cache.mutex};
@@ -2622,15 +2689,37 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
 }
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
+    ::Eden::Performance::Timer guest_write_timer(::Eden::Performance::guest_cpu_write);
     DEBUG_ASSERT(addr != 0 || size != 0);
+    if (::Eden::Performance::cpu_write_defer.load(std::memory_order_relaxed) &&
+        !::Eden::Performance::deferred_replay &&
+        ::Eden::Performance::ExtendDeferredWrite(addr, size, ::Eden::Performance::cpu_write_core)) {
+        return false;
+    }
     {
-        std::scoped_lock lock{buffer_cache.mutex};
+        if (!::Eden::Performance::GuestCacheLockOrDefer(buffer_cache.mutex)) {
+            ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
+            return false;
+        }
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
         if (buffer_cache.OnCPUWrite(addr, size)) {
             return true;
         }
+        const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
+        DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
+        for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
+            if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
+                buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
+                break;
+            }
+        }
     }
     {
-        std::scoped_lock lock{texture_cache.mutex};
+        if (!::Eden::Performance::GuestCacheLockOrDefer(texture_cache.mutex)) {
+            ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
+            return false;
+        }
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
         texture_cache.WriteMemory(addr, size);
     }
     pipeline_cache.InvalidateRegion(addr, size);
@@ -2722,7 +2811,12 @@ void RasterizerVulkan::SignalReference() {
 }
 
 void RasterizerVulkan::ReleaseFences(bool force) {
-    fence_manager.WaitPendingFences(force);
+    if (force) {
+        ::Eden::Performance::Timer drain_timer(::Eden::Performance::gpu_fence_drain);
+        fence_manager.WaitPendingFences(force);
+    } else {
+        fence_manager.WaitPendingFences(force);
+    }
 }
 
 void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {

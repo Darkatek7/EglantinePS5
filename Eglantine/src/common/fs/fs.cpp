@@ -1,3 +1,7 @@
+#if !defined(__PROSPERO__) // not PS5
+#else // PS5
+#include "headless/native_directory.h"
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -328,7 +332,11 @@ bool RemoveDirContentsRecursively(const fs::path& path) {
     std::error_code ec;
 
     // TODO (Morph): Replace this with recursive_directory_iterator once it's fixed in MSVC.
+#if !defined(__PROSPERO__) // not PS5
     for (const auto& entry : fs::directory_iterator(path, ec)) {
+#else // PS5
+    for (const auto& entry : Eden::ReadNativeDirectory(path, ec)) {
+#endif // PS5
         if (ec) {
             LOG_ERROR(Common_Filesystem,
                       "Failed to completely enumerate the directory at path={}, ec_message={}",

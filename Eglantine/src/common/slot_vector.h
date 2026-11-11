@@ -124,9 +124,14 @@ public:
     }
 
     template <typename... Args>
-    [[nodiscard]] SlotId insert(Args&&... args) noexcept {
+    [[nodiscard]] SlotId insert(Args&&... args) {
         const u32 index = FreeValueIndex();
-        new (&values[index].object) T(std::forward<Args>(args)...);
+        try {
+            new (&values[index].object) T(std::forward<Args>(args)...);
+        } catch (...) {
+            free_list.push_back(index); // Restores the popped slot without allocating.
+            throw;
+        }
         SetStorageBit(index);
 
         return SlotId{index};

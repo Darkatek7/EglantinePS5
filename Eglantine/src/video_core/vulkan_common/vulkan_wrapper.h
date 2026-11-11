@@ -7,6 +7,8 @@
 #pragma once
 
 #include <array>
+#include <cstdio>
+#include "performance.h"
 #include <exception>
 #include <limits>
 #include <memory>
@@ -132,8 +134,11 @@ private:
 };
 
 /// Throws a Vulkan exception if result is not success.
-inline void Check(VkResult result) {
+inline void Check(VkResult result, const char* file = __builtin_FILE(),
+                  int line = __builtin_LINE(), const char* operation = __builtin_FUNCTION()) {
     if (result != VK_SUCCESS) {
+        std::fprintf(stderr, "[EglantinePS5] Vulkan failure: %s:%d (%s) VkResult=%d\n",
+                     file, line, operation, static_cast<int>(result));
         throw Exception(result);
     }
 }
@@ -873,12 +878,14 @@ public:
 
     VkResult Submit(Span<VkSubmitInfo> submit_infos,
                     VkFence fence = VK_NULL_HANDLE) const noexcept {
+        auto timer = Eden::Performance::VulkanTimer(2);
         return dld->vkQueueSubmit(queue, submit_infos.size(), submit_infos.data(), fence);
     }
 
     /// Submits using VK_KHR_synchronization2 / Vulkan 1.3 vkQueueSubmit2.
     VkResult Submit2(Span<VkSubmitInfo2> submit_infos,
                      VkFence fence = VK_NULL_HANDLE) const noexcept {
+        auto timer = Eden::Performance::VulkanTimer(2);
         return dld->vkQueueSubmit2(queue, submit_infos.size(), submit_infos.data(), fence);
     }
 
@@ -944,6 +951,7 @@ public:
     void SetObjectNameEXT(const char* name) const;
 
     VkResult Wait(u64 timeout = (std::numeric_limits<u64>::max)()) const noexcept {
+        auto timer = Eden::Performance::VulkanTimer(3);
         return dld->vkWaitForFences(owner, 1, &handle, true, timeout);
     }
 
@@ -1053,6 +1061,7 @@ public:
             .pSemaphores = &handle,
             .pValues = &value,
         };
+        auto timer = Eden::Performance::VulkanTimer(4);
         const VkResult result = dld->vkWaitSemaphores(owner, &wait_info, timeout);
         switch (result) {
         case VK_SUCCESS:
@@ -1183,6 +1192,7 @@ public:
     }
 
     VkResult WaitIdle() const noexcept {
+        auto timer = Eden::Performance::VulkanTimer(5);
         return dld->vkDeviceWaitIdle(handle);
     }
 

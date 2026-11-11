@@ -1,3 +1,8 @@
+#include "headless/guest_clock.h"
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+#include "headless/performance.h"
+#else // PS5
+#endif // PS5
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -251,7 +256,15 @@ Status BufferQueueProducer::DequeueBuffer(s32* out_slot, Fence* out_fence, bool 
         usage |= core->consumer_usage_bit;
 
         s32 found{};
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        const auto dequeue_start = ::Eden::Performance::NowNs();
+#else // PS5
+#endif // PS5
         Status status = WaitForFreeSlotThenRelock(async, &found, &return_flags, lock);
+#if defined(EDEN_DEV_PROFILE) // PS5 development build
+        ::Eden::Performance::AddSince(::Eden::Performance::guest_dequeue_wait, dequeue_start);
+#else // PS5
+#endif // PS5
         if (status != Status::NoError) {
             return status;
         }
@@ -444,6 +457,7 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
     Fence fence{};
 
     input.Deflate(&timestamp, &is_auto_timestamp, &crop, &scaling_mode, &transform, &sticky_transform_, &async, &swap_interval, &fence);
+    ::Eden::GuestClock::FrameQueued(swap_interval);
 
     switch (scaling_mode) {
     case NativeWindowScalingMode::Freeze:
