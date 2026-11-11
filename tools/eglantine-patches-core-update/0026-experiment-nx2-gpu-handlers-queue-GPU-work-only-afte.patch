@@ -1,0 +1,158 @@
+From 8fb6a0b269c4cb027870baa6a9780deceb9af25e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 13:42:50 +0000
+Subject: [PATCH 26/26] experiment: nx2:gpu handlers queue GPU work only after
+ releasing the region lock (Tegra::DeferGpuQueue)
+
+Handlers 102, 213, 214 and 216 held m_region_mutex while the registry's listeners and their own
+RunInOrder/SignalAfterGpu calls pushed onto the GPU thread's queue, which blocks while the queue is
+full; the GPU's back thread takes m_region_mutex to back sparse blocks on write (BackSparseWrite).
+A DeferGpuQueue opened before the lock holds those pushes and makes them, in order, after it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/hle/service/nx2_gsv.h |  5 ++++
+ src/video_core/gpu.cpp         | 45 +++++++++++++++++++++++++++++-----
+ src/video_core/gpu.h           | 14 +++++++++++
+ 3 files changed, 58 insertions(+), 6 deletions(-)
+
+diff --git a/src/core/hle/service/nx2_gsv.h b/src/core/hle/service/nx2_gsv.h
+index db77dcb270..debabe7e81 100644
+--- a/src/core/hle/service/nx2_gsv.h
++++ b/src/core/hle/service/nx2_gsv.h
+@@ -609,6 +609,7 @@ private:
+             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
+                       address, size, w[3]);
+             if (size != 0) {
++                const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
+                 std::scoped_lock lk{m_region_mutex};
+                 std::vector<std::pair<u64, u64>> tiles;
+                 for (const auto& [tile_address, tile] : m_gpu_only_tiles) {
+@@ -664,6 +665,7 @@ private:
+                  w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
+         if (last > start && ((last + 1 - start) % Core::Memory::YUZU_PAGESIZE) == 0) {
+             const u64 size = last + 1 - start;
++            const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
+             std::scoped_lock lk{m_region_mutex};
+             FreeReleasedRegions();
+             if ((w[7] & SparseRegionFlag) == 0) {
+@@ -737,6 +739,8 @@ private:
+             rb.Push(ResultSuccess);
+             return;
+         }
++        // After the lock, with SignalAfterGpu below still after the unmaps (Tegra::DeferGpuQueue).
++        const Tegra::DeferGpuQueue defer;
+         std::scoped_lock lk{m_region_mutex};
+         FreeReleasedRegions();
+         if (m_gpu_only_ranges.erase(first) != 0 && last > first) {
+@@ -791,6 +795,7 @@ private:
+         const size_t count = data.size() / sizeof(SparseMapRequest);
+         std::vector<u8> kinds(count);
+         {
++            const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
+             std::scoped_lock lk{m_region_mutex};
+             FreeReleasedRegions();
+             ++m_tile_calls;
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 3f413224d3..fde1390c86 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -10,6 +10,7 @@
+ #include <condition_variable>
+ #include <list>
+ #include <memory>
++#include <vector>
+ #include <utility>
+ 
+ #include "common/assert.h"
+@@ -48,6 +49,27 @@
+ 
+ namespace Tegra {
+ 
++namespace {
++thread_local unsigned defer_depth = 0;
++thread_local std::vector<std::function<void()>> deferred_queue;
++} // Anonymous namespace
++
++DeferGpuQueue::DeferGpuQueue() {
++    ++defer_depth;
++}
++
++DeferGpuQueue::~DeferGpuQueue() {
++    if (--defer_depth != 0) {
++        return;
++    }
++    // Queued now, outside the caller's locks; a deferred call may defer nothing more.
++    auto queued = std::move(deferred_queue);
++    deferred_queue.clear();
++    for (auto& push : queued) {
++        push();
++    }
++}
++
+ struct GPU::Impl {
+     explicit Impl(Core::System& system_, bool is_async_, bool use_nvdec_)
+         : system{system_}
+@@ -273,17 +295,28 @@ struct GPU::Impl {
+     }
+ 
+     void RunInOrder(std::function<void()>&& func) {
++        if (defer_depth != 0) {
++            deferred_queue.push_back([this, func = std::move(func)]() mutable {
++                gpu_thread.Run(std::move(func), is_async);
++            });
++            return;
++        }
+         gpu_thread.Run(std::move(func), is_async);
+     }
+ 
+     void MapInOrder(GPUVAddr gpu_addr, u64 size, std::function<void()>&& func) {
+         const u64 id = pending_maps.Add(gpu_addr, size);
+-        gpu_thread.Run(
+-            [this, id, func = std::move(func)] {
+-                func();
+-                pending_maps.Remove(id);
+-            },
+-            is_async, true);
++        std::function<void()> run = [this, id, func = std::move(func)] {
++            func();
++            pending_maps.Remove(id);
++        };
++        if (defer_depth != 0) {
++            deferred_queue.push_back([this, run = std::move(run)]() mutable {
++                gpu_thread.Run(std::move(run), is_async, true);
++            });
++            return;
++        }
++        gpu_thread.Run(std::move(run), is_async, true);
+     }
+ 
+     bool IsMapPending(GPUVAddr gpu_addr, u64 size) const {
+diff --git a/src/video_core/gpu.h b/src/video_core/gpu.h
+index 55988006d7..132392a315 100644
+--- a/src/video_core/gpu.h
++++ b/src/video_core/gpu.h
+@@ -136,6 +136,20 @@ class Host1x;
+ 
+ class MemoryManager;
+ 
++/// PS5 experiment: while one is alive on a thread, that thread's GPU::RunInOrder and
++/// GPU::MapInOrder calls reach the GPU thread's queue only when the outermost one ends, in the
++/// order they were made (MapInOrder's range counts as pending at once). Queuing blocks while the
++/// queue is full, and it fills while the GPU's front thread drains the back one; the nx2:gpu
++/// handlers open one before taking the region lock that the back thread takes to back sparse
++/// blocks, so they never wait on the queue while holding it.
++class DeferGpuQueue {
++public:
++    DeferGpuQueue();
++    ~DeferGpuQueue();
++    DeferGpuQueue(const DeferGpuQueue&) = delete;
++    DeferGpuQueue& operator=(const DeferGpuQueue&) = delete;
++};
++
+ class GPU final {
+ public:
+     explicit GPU(Core::System& system, bool is_async, bool use_nvdec);
+-- 
+2.47.3
+

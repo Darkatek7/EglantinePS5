@@ -1,7 +1,7 @@
 From 23e52007e31641a60ede97ad263a83bf6a391a7c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 13:17:44 +0000
-Subject: [PATCH 25/25] experiment: nvhost_as_gpu releases its mutex before
+Subject: [PATCH 25/26] experiment: nvhost_as_gpu releases its mutex before
  queuing GPU work (GPU split deadlock)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

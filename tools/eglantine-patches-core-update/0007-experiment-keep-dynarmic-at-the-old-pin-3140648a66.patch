@@ -1,7 +1,7 @@
 From 6a82879473390c63c1754e1fd6796342e9fe2fa9 Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:44:44 +0000
-Subject: [PATCH 07/25] experiment: keep dynarmic at the old pin 3140648a66
+Subject: [PATCH 07/26] experiment: keep dynarmic at the old pin 3140648a66
 
 The PS5 port's JIT glue (headless/dynarmic/*.cmake) patches dynarmic by
 exact text; upstream changed 35 of its files. The interface differs only

@@ -5,7 +5,7 @@
 ## Summary
 
 - **It builds and runs Zelda stably at the game's 30 FPS cap**: two full runs on build u16 held **29.6–29.7 FPS** on Link's porch (HUD "F31"), against **~20.5 FPS on main** (cec2d7e, same benchmark).
-- Getting there took 7 fixes for upstream changes that break the PS5 (listed below): 5 for memory, and 2 for a deadlock between the GPU threads and the GPU memory service, found with a new hang-stack watchdog.
+- Getting there took 8 fixes for upstream changes that break the PS5 (listed below): 5 for memory, and 3 for deadlocks between the GPU threads and the GPU memory service, found with a new hang-stack watchdog.
 - Memory is ~0.5 GB tighter than on main (~0.7 GB free in gameplay vs ~1.2 GB).
 
 ## What the branch contains
@@ -33,7 +33,8 @@
 5. **Texture cache ceiling (0024).** 3584/4096 MiB instead of upstream's 4352/5120.
 
 6. **Deadlock: GPU memory registry.** `Nx2GpuMemoryRegistry::MapAt`/`Unmap`/`UnmapMemory` called their listeners while holding the registry mutex. The listeners queue work for the GPU thread, and that queuing blocks while the GPU command queue is full. Meanwhile the GPU back thread, flushing an evicted texture into a sparse region (`BackSparseWrite` → `BackSparse`), needed that same mutex. Now the listeners run after the mutex is released.
-7. **Deadlock: GPU address space.** `nvhost_as_gpu::Nx2Map`/`Nx2Unmap`/`Nx2Release`/`Nx2Sparse`/`Nx2SparseTile` held their mutex across `GPU::MapInOrder`/`RunInOrder`, the same cycle on a second lock (the back thread waits in `Nx2BackSparse`). They now release it before queuing. Still open: the session's handlers 102 and 213 hold their region lock across unmaps. That is the same class of cycle, but no run has hit it.
+7. **Deadlock: GPU address space.** `nvhost_as_gpu::Nx2Map`/`Nx2Unmap`/`Nx2Release`/`Nx2Sparse`/`Nx2SparseTile` held their mutex across `GPU::MapInOrder`/`RunInOrder`, the same cycle on a second lock (the back thread waits in `Nx2BackSparse`). They now release it before queuing.
+8. **Deadlock: nx2:gpu handlers** (102, 213, 214, 216). They held the session's region lock, which the back thread takes in `BackSparseWrite`, while the registry's listeners and their own `RunInOrder`/`SignalAfterGpu` queued GPU work. Same class of cycle; no run had hit it yet. Now a `Tegra::DeferGpuQueue` opened before the lock holds those pushes and makes them, in order, once the lock is released (`MapInOrder` ranges still count as pending at once).
 
 Also kept: the 8 MiB cap on read-only native compute storage reads (upstream #1231 allows up to 1 GiB). It turned out not to be the OOM cause, but it matches main.
 
@@ -48,6 +49,7 @@ Also kept: the 8 MiB cap on read-only native compute storage reads (upstream #12
 | **zc12p** | u12 + 64 MiB cap + 0024 limits | **Gameplay, stable for 80 s: 28–30 FPS** |
 | zr1–zr3, zr5, zr6 | u13–u15 | Froze at the scene load (~50 s): the deadlocks above |
 | **zr7, zr8** | **u16** | **Stable for the whole run (180 s): 29.7 and 29.6 FPS, HUD F31** |
+| **zr9 (×2)** | **u17** (+ fix 8) | **Stable: 29.8 and 29.5 FPS**; one run had a 14 s slow stretch at the load (waiting on a present), then recovered |
 
 **Measured, u16 (zr7, zr8) vs main** (main = runs znl_1 and zl949_1 of cec2d7e's series):
 
@@ -79,4 +81,4 @@ The image looks right (lit scene, foliage). One run (zc12p, before the deadlock 
   - upstream's AMD and texture defaults checked against the PS5.
 - Estimated at several days, not hours.
 
-Builds: `.local/core/candidate-u16` (zr7/zr8). Rebuild with `.local/core/build.sh NAME`. Trail: `.local/core/STATUS.md`.
+Builds: `.local/core/candidate-u17` (latest, zr9) and `candidate-u16` (zr7/zr8). Rebuild with `.local/core/build.sh NAME`. Trail: `.local/core/STATUS.md`.

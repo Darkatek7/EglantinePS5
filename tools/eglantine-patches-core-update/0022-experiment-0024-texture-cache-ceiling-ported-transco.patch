@@ -1,7 +1,7 @@
 From fb672e29a88eea059989f98b44bed562df0af3e5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 12:34:28 +0000
-Subject: [PATCH 22/25] experiment: 0024 texture cache ceiling ported;
+Subject: [PATCH 22/26] experiment: 0024 texture cache ceiling ported;
  transcode bound 64 MiB by default
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

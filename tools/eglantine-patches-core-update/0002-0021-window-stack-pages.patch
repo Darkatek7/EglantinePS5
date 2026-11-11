@@ -1,7 +1,7 @@
 From 115f71d2e2a1c385424e17cd2564a86a11a03953 Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:24:22 +0000
-Subject: [PATCH 02/25] 0021-window-stack-pages
+Subject: [PATCH 02/26] 0021-window-stack-pages
 
 (cherry picked from commit 6f5048618e9264d60a638467685aa8afd4022ad6)
 ---
