@@ -934,10 +934,16 @@ adapt('src/video_core/renderer_vulkan/vk_scheduler.h',
      '    std::condition_variable_any event_cv;\n    std::condition_variable drain_cv;\n    unsigned drain_waiters{};'),
 ])
 adapt('src/video_core/renderer_vulkan/vk_scheduler.cpp', 'vulkan_scheduler.cpp', [
-    ('Scheduler::~Scheduler() = default;',
-     'Scheduler::~Scheduler() {\n'
-     '    worker_thread.request_stop();\n'
-     '    if (worker_thread.joinable()) worker_thread.join();\n'
+    # Upstream's destructor stops the worker only for its own GPU trace; the port always does.
+    ('Scheduler::~Scheduler() {\n    if (trace_query_pool) {\n        WaitWorker();\n'
+     '        worker_thread.request_stop();\n        worker_thread.join();\n'
+     '        if (trace_gpu_tick != 0) {\n            master_semaphore->Wait(trace_gpu_tick);\n'
+     '        }\n    }\n}',
+     'Scheduler::~Scheduler() {\n    if (trace_query_pool) {\n        WaitWorker();\n'
+     '        worker_thread.request_stop();\n        worker_thread.join();\n'
+     '        if (trace_gpu_tick != 0) {\n            master_semaphore->Wait(trace_gpu_tick);\n'
+     '        }\n    } else {\n        worker_thread.request_stop();\n'
+     '        if (worker_thread.joinable()) worker_thread.join();\n    }\n'
      '    GpuTimeReset(device);\n}'),
     ('        event_cv.wait(ql, [this] { return work_queue.empty(); });',
      '        ++drain_waiters;\n        drain_cv.wait(ql, [this] { return work_queue.empty(); });\n        --drain_waiters;'),
@@ -947,27 +953,27 @@ adapt('src/video_core/renderer_vulkan/vk_scheduler.cpp', 'vulkan_scheduler.cpp',
 
     ('#include <memory>', '#include <memory>\n#include <array>\n#include <chrono>\n#include <cstdio>\n#include "dev_vulkan.h"\n#include "hud_gpu_time.h"\n#include "submission_origin.h"\nextern "C" bool eden_vulkan_handoff_enabled();'),
     ('namespace Vulkan {\n', 'namespace Vulkan {\n' + GPU_TIME_HELPERS),
-    ('        .pInheritanceInfo = nullptr,\n    });\n}\n\nu64 Scheduler::SubmitExecution(',
-     '        .pInheritanceInfo = nullptr,\n    });\n    GpuTimeBegin(device, current_upload_cmdbuf);\n}\n\nu64 Scheduler::SubmitExecution('),
-    ('u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {',
-     'u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {\n'
+    ('        .pInheritanceInfo = nullptr,\n    });\n    if (trace_query_pool && !trace_gpu_failed) {\n        TraceGpuSubmission();',
+     '        .pInheritanceInfo = nullptr,\n    });\n    GpuTimeBegin(device, current_upload_cmdbuf);\n    if (trace_query_pool && !trace_gpu_failed) {\n        TraceGpuSubmission();'),
+    ('u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,\n                     std::source_location location) {',
+     'u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,\n                     std::source_location location) {\n'
      '    GpuSubmitOriginScope origin{__builtin_return_address(0), false, true};'),
-    ('void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {',
-     'void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {\n'
+    ('void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,\n                       std::source_location location) {',
+     'void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore,\n                       std::source_location location) {\n'
      '    GpuSubmitOriginScope origin{__builtin_return_address(0), true, true};'),
     ('    RecordWithUploadBuffer([signal_semaphore, wait_semaphore, signal_value,',
      '    RecordWithUploadBuffer([signal_semaphore, wait_semaphore, signal_value,\n'
      '                            submit_origin = gpu_submit_origin,'),
     ('        cmdbuf.End();\n\n        if (on_submit)',
      '        GpuTimeEnd(cmdbuf);\n        cmdbuf.End();\n\n        if (on_submit)'),
-    ('            vk::Check(result);\n            break;\n        }\n    });\n    chunk->MarkSubmit();',
+    ('            vk::Check(result);\n            break;\n        }\n        if (trace_frame_end != 0) {',
      '            vk::Check(result);\n            break;\n        }\n'
-     '        GpuTimeCountOrigin(submit_origin);\n        GpuTimeCollect(device);\n    });\n    chunk->MarkSubmit();'),
+     '        GpuTimeCountOrigin(submit_origin);\n        GpuTimeCollect(device);\n        if (trace_frame_end != 0) {'),
     ('    const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);\n'
-     '    AllocateNewContext();\n    return signal_value;',
+     '    AllocateNewContext();\n    last_flush = std::chrono::steady_clock::now();',
      '    const u64 signal_value = SubmitExecution(signal_semaphore, wait_semaphore);\n'
      '    if (::Eden::DevVulkan::sync_submissions) {\n        Wait(signal_value);\n    }\n'
-     '    AllocateNewContext();\n    return signal_value;'),
+     '    AllocateNewContext();\n    last_flush = std::chrono::steady_clock::now();'),
 ])
 adapt('src/video_core/renderer_vulkan/pipeline_helper.h',
       'include/video_core/renderer_vulkan/pipeline_helper.h', [
