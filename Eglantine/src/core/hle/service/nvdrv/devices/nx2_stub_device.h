@@ -62,20 +62,42 @@ public:
         MapAt(0, 0, gpu_address, cpu_address, size);
     }
 
+    // PS5 experiment: the map and unmap listeners run after `mutex` is released. They wait for
+    // the GPU thread (nvhost_as_gpu::Nx2Map -> GPU::MapInOrder), and the GPU's back thread takes
+    // `mutex` when it backs a sparse block (BackSparse, from INx2GpuSession::BackSparseWrite):
+    // a game thread mapping (211) waited for the front, the front drained the back, and the back
+    // waited for `mutex` (Ocarina of Time froze at its first scene load, hang_stacks.h dump).
+    std::vector<Listeners> ListenerSnapshot() const {
+        std::vector<Listeners> copy;
+        copy.reserve(listeners.size());
+        for (const auto& [owner, listener] : listeners) {
+            copy.push_back(listener);
+        }
+        return copy;
+    }
+
     void MapAt(u32 handle, u64 offset, u64 gpu_address, u64 cpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        TrimMappings(gpu_address, size);
-        mappings.push_back({gpu_address, cpu_address, size, handle, offset});
-        for (auto& [owner, listener] : listeners) {
+        std::vector<Listeners> notify;
+        {
+            std::scoped_lock lk{mutex};
+            TrimMappings(gpu_address, size);
+            mappings.push_back({gpu_address, cpu_address, size, handle, offset});
+            notify = ListenerSnapshot();
+        }
+        for (auto& listener : notify) {
             listener.map(gpu_address, cpu_address, size);
         }
     }
 
     // NormalUnmapGpuMemory4K, or destroying the memory: the GPU range stops reaching it.
     void Unmap(u64 gpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        TrimMappings(gpu_address, size);
-        for (auto& [owner, listener] : listeners) {
+        std::vector<Listeners> notify;
+        {
+            std::scoped_lock lk{mutex};
+            TrimMappings(gpu_address, size);
+            notify = ListenerSnapshot();
+        }
+        for (auto& listener : notify) {
             listener.unmap(gpu_address, size);
         }
     }
@@ -84,7 +106,12 @@ public:
     // stops reaching it, wherever it was mapped, because the game reuses the memory right after.
     // Returns the ranges other than the one at the memory's own address, as (GPU address, size).
     std::vector<std::pair<u64, u64>> UnmapMemory(u64 cpu_address, u64 size) {
+        std::vector<Listeners> notify;
+        std::vector<std::pair<u64, u64>> unmapped;
+        std::vector<std::pair<u64, u64>> leftovers;
+        {
         std::scoped_lock lk{mutex};
+        notify = ListenerSnapshot();
         const u64 end = cpu_address + size;
         struct Range {
             u64 gpu_address;
@@ -100,14 +127,17 @@ public:
                                   m.gpu_address == m.cpu_address});
             }
         }
-        std::vector<std::pair<u64, u64>> leftovers;
         for (const auto& range : ranges) {
             TrimMappings(range.gpu_address, range.size);
-            for (auto& [owner, listener] : listeners) {
-                listener.unmap(range.gpu_address, range.size);
-            }
+            unmapped.emplace_back(range.gpu_address, range.size);
             if (!range.own) {
                 leftovers.emplace_back(range.gpu_address, range.size);
+            }
+        }
+        }
+        for (const auto& [gpu_address, range_size] : unmapped) {
+            for (auto& listener : notify) {
+                listener.unmap(gpu_address, range_size);
             }
         }
         return leftovers;
