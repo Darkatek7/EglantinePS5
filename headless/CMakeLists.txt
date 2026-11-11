@@ -2687,6 +2687,13 @@ endif()
 file(READ "${PROJECT_SOURCE_DIR}/src/video_core/shader_environment.cpp" shader_environment_source)
 string(FIND "${shader_environment_source}" "void LoadPipelines(" shader_reader_begin)
 string(FIND "${shader_environment_source}" "} // namespace VideoCommon" shader_reader_end REVERSE)
+# Newer cores keep more after LoadPipelines (the pipeline cache record helpers): replace only
+# LoadPipelines itself, up to the anonymous namespace that follows it.
+string(SUBSTRING "${shader_environment_source}" ${shader_reader_begin} -1 shader_reader_rest)
+string(FIND "${shader_reader_rest}" "\nnamespace {\n" shader_reader_next)
+if(shader_reader_begin GREATER_EQUAL 0 AND shader_reader_next GREATER_EQUAL 0)
+    math(EXPR shader_reader_end "${shader_reader_begin} + ${shader_reader_next} + 1")
+endif()
 if(shader_reader_begin LESS 0 OR shader_reader_end LESS shader_reader_begin)
     eden_pinned_failed("Pinned shader cache reader changed")
 endif()
