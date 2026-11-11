@@ -192,6 +192,18 @@ string(REPLACE "    std::array<u8, DEFAULT_STACK_SIZE> stack{};"
 string(REPLACE "    impl->stack_limit = impl->stack.data();"
     "    impl->stack.Allocate(DEFAULT_STACK_SIZE);\n    impl->stack_limit = impl->stack.data();"
     fiber_source "${fiber_source}")
+# Newer cores hold the stack in a unique_ptr<u8[]> (heap blocks of 2 MiB each, 330 MiB for
+# Ocarina of Time's 165 guest threads): the same FiberStack replaces it.
+string(REPLACE "    std::unique_ptr<u8[]> stack;"
+    "    ::Eden::FiberStack stack;" fiber_source "${fiber_source}")
+string(REPLACE "    impl->stack.reset(new u8[DEFAULT_STACK_SIZE]);\n    impl->stack_limit = impl->stack.get();"
+    "    impl->stack.Allocate(DEFAULT_STACK_SIZE);\n    impl->stack_limit = impl->stack.data();"
+    fiber_source "${fiber_source}")
+string(FIND "${fiber_source}" "::Eden::FiberStack stack;" fiber_stack_at)
+string(FIND "${fiber_source}" "impl->stack.Allocate(DEFAULT_STACK_SIZE);" fiber_alloc_at)
+if(fiber_stack_at LESS 0 OR fiber_alloc_at LESS 0)
+    eden_pinned_failed("Pinned fiber stack changed")
+endif()
 string(PREPEND fiber_source "#include \"${EDEN_PORT_DIR}/fiber_stack.h\"\n")
 endif()
 write_derived("${PORT_BUILD_DIR}/fiber.cpp" "${fiber_source}")
