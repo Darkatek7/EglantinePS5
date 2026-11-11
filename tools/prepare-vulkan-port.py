@@ -821,7 +821,8 @@ adapt('src/video_core/renderer_vulkan/vk_staging_buffer_pool.cpp', 'vulkan_stagi
 # Mario Kart World, held for the session in the pool the guest and the GPU share. Past 16 MiB they
 # go back once the blit has written its result (the scoped guest write ends with its block; the
 # loading probe's writeback scope ends there too, after the write, as it did at the return).
-adapt('src/video_core/engines/sw_blitter/blitter.cpp', 'sw_blitter.cpp', [
+# Upstream Eglantine releases the blitter's large buffers itself (ReleaseLargeBuffers): nothing to add then.
+adapt('src/video_core/engines/sw_blitter/blitter.cpp', 'sw_blitter.cpp', [edit for edit in [
     ('    const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);\n',
      '    {\n    const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);\n'),
     ('    VideoCommon::LoadingProbe::writeback.Mark("scoped memory destructor", dst_size);\n    return true;\n}\n',
@@ -833,7 +834,7 @@ adapt('src/video_core/engines/sw_blitter/blitter.cpp', 'sw_blitter.cpp', [
      '    if (impl->intermediate_src.capacity() * sizeof(f32) > kKeepBytes) impl->intermediate_src = Common::ScratchBuffer<f32>{};\n'
      '    if (impl->intermediate_dst.capacity() * sizeof(f32) > kKeepBytes) impl->intermediate_dst = Common::ScratchBuffer<f32>{};\n'
      '    return true;\n}\n'),
-])
+] if 'ReleaseLargeBuffers' not in (source / 'src/video_core/engines/sw_blitter/blitter.cpp').read_text()])
 # Development A/B switches for device features (headless/dev_vulkan.h, dev-settings).
 adapt('src/video_core/vulkan_common/vulkan_device.cpp', 'vulkan_device.cpp', [
     # 16 MiB blocks: the pool the console's GPU allocates from is the CPU's and the guest's too, and
