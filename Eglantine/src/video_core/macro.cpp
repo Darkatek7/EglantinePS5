@@ -1505,8 +1505,11 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         // Macro code runs compiled to x86-64 (macro_turing_jit.h) instead of through the memo
         // and the interpreter; EDEN_NX2_MME_JIT=0 goes back to those.
         static const bool use_jit = [] {
+            // PS5 experiment: off unless EDEN_NX2_MME_JIT=1. The console gives the app no
+            // executable memory for xbyak (Xbyak::MmapAllocator "can't alloc" as the code grew);
+            // the port runs every macro through the interpreter (headless/macro_recovery.cmake).
             const char* value = std::getenv("EDEN_NX2_MME_JIT");
-            return value == nullptr || value[0] != '0';
+            return value != nullptr && value[0] == '1';
         }();
         if (use_jit) {
             if (!native_jit) {
