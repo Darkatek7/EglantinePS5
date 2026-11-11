@@ -67,8 +67,8 @@ public:
     // `mutex` when it backs a sparse block (BackSparse, from INx2GpuSession::BackSparseWrite):
     // a game thread mapping (211) waited for the front, the front drained the back, and the back
     // waited for `mutex` (Ocarina of Time froze at its first scene load, hang_stacks.h dump).
-    std::vector<Listeners> ListenerSnapshot() const {
-        std::vector<Listeners> copy;
+    auto ListenerSnapshot() const {
+        std::vector<Listeners> copy{};
         copy.reserve(listeners.size());
         for (const auto& [owner, listener] : listeners) {
             copy.push_back(listener);
