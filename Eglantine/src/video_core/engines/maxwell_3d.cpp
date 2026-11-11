@@ -511,10 +511,7 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
 }
 
 void Maxwell3D::MacroWrite(Core::System& system, u32 method, u32 argument) {
-    bool bookkeeping = g_trace_first_method_writes || VideoCommon::Nx2Profile::Enabled();
-#ifdef ARCHITECTURE_x86_64
-    bookkeeping = bookkeeping || TuringMacroJit::RtDump::RecordingConfigured();
-#endif
+    const bool bookkeeping = trace_first_method_writes || VideoCommon::Nx2Profile::Enabled();
     if (method < MacroRegistersStart && !execution_mask[method] && !front_macros && !bookkeeping)
         [[likely]] {
         const u32 value = ProcessShadowRam(method, argument);
