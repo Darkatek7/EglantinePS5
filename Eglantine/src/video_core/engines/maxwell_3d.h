@@ -3336,6 +3336,14 @@ private:
         }
     }
 
+public:
+    /// A register write a macro makes (MacroEngine::Execute): a state register (not in
+    /// execution_mask) takes a short path with CallMethod's effect (shadow RAM, the same-value
+    /// skip, dirty flags); anything else, and every write while profiling or tracing, takes
+    /// CallMethod itself.
+    void MacroWrite(Core::System& system, u32 method, u32 argument);
+
+private:
     void ConsumeSinkImpl(Core::System& system) override;
 
     void ProcessMethodCall(u32 method, u32 argument, u32 nonshadow_argument, bool is_last_call);

@@ -510,6 +510,22 @@ void Maxwell3D::TraceFirstMethodWrite(u32 method, u32 argument) {
     }
 }
 
+void Maxwell3D::MacroWrite(Core::System& system, u32 method, u32 argument) {
+    bool bookkeeping = g_trace_first_method_writes || VideoCommon::Nx2Profile::Enabled();
+#ifdef ARCHITECTURE_x86_64
+    bookkeeping = bookkeeping || TuringMacroJit::RtDump::RecordingConfigured();
+#endif
+    if (method < MacroRegistersStart && !execution_mask[method] && !front_macros && !bookkeeping)
+        [[likely]] {
+        const u32 value = ProcessShadowRam(method, argument);
+        if (!SkipSameValueWrites() || regs.reg_array[method] != value) {
+            ProcessDirtyRegisters(method, value);
+        }
+        return;
+    }
+    CallMethod(system, method, argument, true);
+}
+
 void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     if (front_macros && !VideoCommon::GpuSplit::OnBackThread()) {
         ReleaseFront();
