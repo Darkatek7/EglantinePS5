@@ -75,6 +75,12 @@ struct GPU::Impl {
         if (bound_channel != channel_id) {
             auto it = channels.find(channel_id);
             ASSERT(it != channels.end());
+            // A channel set up while the GPU thread was split: its caches' state now, on the
+            // thread that binds it (the split's back, in order with its draws).
+            if (it->second->rasterizer_pending) {
+                it->second->rasterizer_pending = false;
+                renderer->ReadRasterizer()->InitializeChannel(*it->second);
+            }
             bound_channel = channel_id;
             current_channel = it->second.get();
             renderer->ReadRasterizer()->BindChannel(*current_channel);
@@ -88,8 +94,18 @@ struct GPU::Impl {
     void InitChannel(Control::ChannelState& to_init, u64 program_id) {
         to_init.Init(system, program_id);
         to_init.BindRasterizer(renderer->ReadRasterizer());
+        // The caches' per-channel state (channel lists, address-space page tables) belongs to
+        // the split's back thread while it runs: set up from here (a guest thread) it changed
+        // under the back's draws, which then crashed at startup on a null image in a barrier or
+        // on garbage commands (Bananza: 5 of 10 starts with the split, 0 of 9 without). The GPU
+        // thread that binds the channel finishes it (BindChannel).
+        if (VideoCommon::GpuSplit::Get().Active()) {
+            to_init.rasterizer_pending = true;
+            return;
+        }
         renderer->ReadRasterizer()->InitializeChannel(to_init);
     }
+
 
     void InitAddressSpace(Tegra::MemoryManager& memory_manager) {
         memory_manager.BindRasterizer(renderer->ReadRasterizer());
