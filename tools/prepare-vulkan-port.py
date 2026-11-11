@@ -136,15 +136,13 @@ void RasterizerVulkan::DispatchCompute() {"""),
     # so a draw that returns early is charged for its unmarked tail and the sum of the six falls
     # short by that amount plus two clock reads per phase. control/scheduler.cpp aside, this is the
     # only place the dispatch's time can be spent - so its six numbers should add up to it.
-    ('''    namespace Profile = VideoCommon::Nx2Profile;
-    {
+    ('''    {
         Profile::Scope scope{Profile::Zone::FlushWork};
         FlushWork();
         gpu_memory->FlushCaching();
     }
 ''',
-     '''    namespace Profile = VideoCommon::Nx2Profile;
-    const ::Eden::Performance::Timer rasterizer_draw_timer(::Eden::Performance::rasterizer_draw);
+     '''    const ::Eden::Performance::Timer rasterizer_draw_timer(::Eden::Performance::rasterizer_draw);
     auto phase = ::Eden::Performance::MarkStart();
     {
         Profile::Scope scope{Profile::Zone::FlushWork};
@@ -202,23 +200,21 @@ void RasterizerVulkan::DispatchCompute() {"""),
     # UpdateDynamicStates asked the cache for the current pipeline a second time
     # per draw, recomputing the same fixed-state key. Reuse PrepareDraw's result;
     # other callers keep the original lookup.
-    ('template <typename Func>\nvoid RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {',
+    ('template <typename Func>\nvoid RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_indirect) {',
      '''namespace {
 // GPU thread only: the pipeline PrepareDraw refreshed for the draw in progress.
 GraphicsPipeline* prepared_pipeline = nullptr;
 } // namespace
 
 template <typename Func>
-void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
-    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    buffer_cache_runtime.BeginReadbackWriteBatch();\n    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };\n    // update engine as channel may be different.',
+void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_indirect) {'''),
+    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    // What the next draw\'s TakeReusableDraw compares with',
      '''    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-    buffer_cache_runtime.BeginReadbackWriteBatch();
-    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };
     prepared_pipeline = pipeline;
     SCOPE_EXIT {
         prepared_pipeline = nullptr;
     };
-    // update engine as channel may be different.'''),
+    // What the next draw's TakeReusableDraw compares with'''),
     ('        if (auto* gp = pipeline_cache.CurrentGraphicsPipeline(); gp && gp->HasDynamicVertexInput()) {',
      '        if (auto* gp = prepared_pipeline ? prepared_pipeline : pipeline_cache.CurrentGraphicsPipeline();\n            gp && gp->HasDynamicVertexInput()) {'),
     # Development GPU fault probe (dev_vulkan.h, pipeline_trace=on): once the runner
@@ -332,9 +328,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
 '''),
     # The GPU thread, before it takes both cache locks for a draw: a guest thread asleep on one
     # goes first (performance.h YieldToGuests).
-    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    buffer_cache_runtime.BeginReadbackWriteBatch();\n    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };\n    prepared_pipeline = pipeline;\n',
+    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;\n',
      '    ::Eden::Performance::YieldToGuests();  // a guest thread asleep on a cache lock goes first\n'
-     '    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    buffer_cache_runtime.BeginReadbackWriteBatch();\n    SCOPE_EXIT { buffer_cache_runtime.AbortReadbackWriteBatch(); };\n    prepared_pipeline = pipeline;\n'),
+     '    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;\n'),
     # FlushCommands submits only when nothing has been submitted since the last draw, clear or
     # dispatch was recorded (FlushWork notes the scheduler's tick at each). It asked only whether
     # a draw was counted since the counter was last cleared, and a submission by anything else (a
@@ -2162,7 +2158,12 @@ for name, index, expected in (
         # later shaders, and staging/descriptor reuse is protected by ticks.
         text = text.replace('VulkanTimer(12); scheduler.Finish();',
                             'VulkanTimer(12); scheduler.Flush();')
-    for probe_old, probe_new in probes.get(name, []):
+    file_probes = probes.get(name, [])
+    if lenient and any(text.count(probe_old) != 1 for probe_old, _ in file_probes):
+        # Later probes build on earlier ones: all of a file's or none.
+        skip(f'{name} probes (all)', ', '.join(o[:30] for o, _ in file_probes if text.count(o) != 1))
+        file_probes = []
+    for probe_old, probe_new in file_probes:
         if text.count(probe_old) != 1:
             if lenient:
                 skip(f'{name} probe', probe_old)
