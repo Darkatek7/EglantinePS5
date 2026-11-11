@@ -17,13 +17,13 @@ class StalePages {
 public:
     /// Device memory pages (Core::Memory::YUZU_PAGEBITS), not the texture cache's lookup pages.
     static constexpr u64 PAGE_BITS = 12;
-    static constexpr u64 PAGE_SIZE = u64{1} << PAGE_BITS;
+    static constexpr u64 STALE_PAGE_SIZE = u64{1} << PAGE_BITS;
 
     /// Marks the pages wholly inside [addr, addr + size): a page shared with other data keeps
     /// that data's state.
     template <typename OnRun>
     void Mark(DAddr addr, u64 size, OnRun&& on_run) {
-        const u64 first = (addr + PAGE_SIZE - 1) >> PAGE_BITS;
+        const u64 first = (addr + STALE_PAGE_SIZE - 1) >> PAGE_BITS;
         const u64 end = (addr + size) >> PAGE_BITS;
         if (end <= first || end > MAX_PAGES) {
             return;
@@ -53,7 +53,7 @@ public:
             return;
         }
         const u64 first = addr >> PAGE_BITS;
-        const u64 end = (std::min<u64>)((addr + size + PAGE_SIZE - 1) >> PAGE_BITS, bits.size() * 64);
+        const u64 end = (std::min<u64>)((addr + size + STALE_PAGE_SIZE - 1) >> PAGE_BITS, bits.size() * 64);
         Run<std::remove_reference_t<OnRun>> run{on_run};
         for (u64 page = first; page < end;) {
             u64& word = bits[page / 64];
@@ -81,7 +81,7 @@ public:
             return false;
         }
         const u64 first = addr >> PAGE_BITS;
-        const u64 end = (addr + size + PAGE_SIZE - 1) >> PAGE_BITS;
+        const u64 end = (addr + size + STALE_PAGE_SIZE - 1) >> PAGE_BITS;
         if (end > bits.size() * 64) {
             return false;
         }
