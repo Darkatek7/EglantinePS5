@@ -955,6 +955,11 @@ struct Memory::Impl {
                 sys_core_guard.unlock();
             }
         };
+#if defined(__PROSPERO__) // PS5
+        // The guest core a tracked write comes from: a write the GPU caches defer while their lock
+        // is held goes to that core's queue (performance.h, cpu_write_defer).
+        ::Eden::Performance::cpu_write_core = static_cast<unsigned>(core);
+#endif // PS5
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;

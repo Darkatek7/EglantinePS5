@@ -12,15 +12,6 @@ cd "$root"
 mode=${1:?usage: tools/build-package.sh release|dev TITLE_ID}
 scratch=$(cat .local/headless-cache)
 export PS5_PAYLOAD_SDK="$scratch/sdk"
-# Lenient (for now): the release source checks in tools/core-source-checks-pending.txt test PS5
-# changes Eglantine/ does not have yet; they warn instead of failing. Every other check must pass.
-# EDEN_PORT_LENIENT=0 makes them fatal too.
-export EDEN_PORT_LENIENT=${EDEN_PORT_LENIENT:-1}
-if [[ $EDEN_PORT_LENIENT == 1 ]]; then
-    mkdir -p "$root/build"
-    export EDEN_PORT_SKIPPED=${EDEN_PORT_SKIPPED:-$root/build/port-skipped.txt}
-    rm -f "$EDEN_PORT_SKIPPED" "$EDEN_PORT_SKIPPED.cmake"
-fi
 export EDEN_PS5_VULKAN=ON EDEN_VULKAN_DRIVER=RADV
 case $mode in
 release)

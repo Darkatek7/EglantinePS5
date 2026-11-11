@@ -908,6 +908,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     if (VideoCommon::OotNetwork::BypassEnabled(Settings::GetCurrentProgramID())) {
         TrackOotTonemappedImage(*pipeline);
     }
+#if defined(__PROSPERO__) // PS5
+    ::Eden::AstcPolicy::Draw(); // busy frames decode ASTC in the background (astc_policy.h)
+#endif // PS5
     // Task/mesh pipelines: the draw's vertex count is the number of task workgroups.
     mesh_draw = pipeline->IsMeshPipeline();
     // EDEN_NX2_NO_MESH=1: skip task/mesh draws as before they were supported (A/B comparisons).
@@ -2592,10 +2595,21 @@ bool RasterizerVulkan::HoldsQueries(DAddr addr, u64 size) {
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
     ::Eden::Performance::Timer guest_read_timer(::Eden::Performance::guest_cpu_read);
     std::optional<VideoCore::RasterizerDownloadArea> texture_area;
+#if defined(__PROSPERO__) // PS5
+    // Pages no image was ever registered in have nothing for the texture cache to flush: answered
+    // without its lock, which the GPU thread holds through every draw (image_pages.h). Otherwise
+    // the lock is spun for briefly before sleeping on it (performance.h, GuestCacheLock).
+    if (!::Eden::ImagePages::NeverHeld(addr, size)) {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_area = texture_cache.GetFlushArea(addr, size);
+    }
+#else // PS5
     {
         std::scoped_lock lock{texture_cache.mutex};
         texture_area = texture_cache.GetFlushArea(addr, size);
     }
+#endif // PS5
     if (texture_area) {
         // The core disarmed the read's pages before asking, and skips later reads in this area,
         // even through another device alias of those pages. The buffer cache arms only pages it

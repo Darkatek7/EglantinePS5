@@ -581,23 +581,6 @@ static void RefreshFreeMemory() {
     graphics_memory_short.store(view.short_memory, std::memory_order_relaxed);
     // The pool, the guest's memory and the heap in stderr.log every 20 s, to see what holds it.
     static std::atomic<long long> summary_ns{0};
-    // EDEN_MEMORY_EVERY_MS (diagnostics): the pool and driver lines that often as well.
-    static const long long every_ns = [] {
-        const char* value = std::getenv("EDEN_MEMORY_EVERY_MS");
-        return value ? std::atoll(value) * 1'000'000LL : 0LL;
-    }();
-    static std::atomic<long long> often_ns{0};
-    if (every_ns > 0 && now - often_ns.load(std::memory_order_relaxed) >= every_ns) {
-        often_ns.store(now, std::memory_order_relaxed);
-        std::size_t guest_span = 0, guest_held = 0;
-        ::Common::GuestMemoryUsage(&guest_span, &guest_held);
-        std::fprintf(stderr, "EDEN_MEMORY_OFTEN ms=%lld free_mib=%zu driver_mib=%llu guest_held_mib=%zu heap_mib=%zu\n",
-                     now / 1'000'000,
-                     largest >> 20,
-                     &eden_radv_private_radv_ps5_allocated_bytes != nullptr
-                         ? __atomic_load_n(&eden_radv_private_radv_ps5_allocated_bytes, __ATOMIC_RELAXED) >> 20 : 0ULL,
-                     guest_held >> 20, (eden_heap_committed ? eden_heap_committed() : std::size_t{0}) >> 20);
-    }
     if (now - summary_ns.load(std::memory_order_relaxed) >= 10'000'000'000) {
         summary_ns.store(now, std::memory_order_relaxed);
         std::size_t guest_span = 0, guest_held = 0;

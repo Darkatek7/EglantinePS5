@@ -368,18 +368,6 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         return result;
     }
 
-    // PS5 experiment diagnostic: images of 8 MiB and more, and the running total, on stderr.
-    {
-        static std::atomic<u64> image_total{};
-        const u64 total = image_total.fetch_add(alloc_info.size, std::memory_order_relaxed) + alloc_info.size;
-        if (alloc_info.size >= (8u << 20)) {
-            std::fprintf(stderr, "EDEN_BIG_IMAGE %ux%ux%u levels=%u layers=%u format=%d samples=%u usage=%#x size=%llu MiB (images made so far %llu MiB)\n",
-                         ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels, ci.arrayLayers,
-                         int(ci.format), unsigned(ci.samples), unsigned(ci.usage),
-                         static_cast<unsigned long long>(alloc_info.size >> 20),
-                         static_cast<unsigned long long>(total >> 20));
-        }
-    }
     // Log GPU memory allocation for images
     if (GPU::Logging::IsActive() &&
         Settings::values.gpu_log_memory_tracking.GetValue()) {
@@ -568,10 +556,6 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
         vk::Check(result);
     }
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
-    if (alloc_info.size >= (8u << 20)) {
-        std::fprintf(stderr, "EDEN_BIG_VKBUFFER size=%llu MiB usage=%#x memory_usage=%d\n",
-                     static_cast<unsigned long long>(alloc_info.size >> 20), unsigned(ci.usage), int(usage));
-    }
 
     // Log GPU memory allocation for buffers
     if (GPU::Logging::IsActive() &&

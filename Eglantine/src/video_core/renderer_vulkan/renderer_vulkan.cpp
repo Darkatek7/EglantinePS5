@@ -284,9 +284,14 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
     const auto presented = trace ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
+#if defined(__PROSPERO__) // PS5
+    // Start the next frame's command buffer now, not at its first draws.
+    scheduler.DispatchWork();
+#else // PS5
 #ifdef HAS_LSFG
     scheduler.DispatchWork();
 #endif
+#endif // PS5
 
     gpu.RendererFrameEndNotify();
     rasterizer.TickFrame();

@@ -45,8 +45,6 @@ ours and upstream's, are in `git log -- Eglantine`.
 
 ## Not done yet
 
-- PS5 changes this core does not have yet, each with the release source check that tests it:
-  tools/core-source-checks-pending.txt (those checks only warn until then).
 - dynarmic (`Eglantine/src/dynarmic`) is kept at the old pin's version (its PS5 port needs it).
 
 ## Our changes right after the import

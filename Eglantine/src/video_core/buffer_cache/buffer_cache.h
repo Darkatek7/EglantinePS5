@@ -3639,12 +3639,6 @@ BufferId BufferCache<P>::CreateBuffer(DAddr device_addr, u32 wanted_size,
     wanted_size = static_cast<u32>(device_addr_end - device_addr);
     const OverlapResult overlap = ResolveOverlaps(device_addr, wanted_size);
     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
-    // PS5 experiment diagnostic: very large buffers (the shared pool ran out in CreateBuffer).
-    if (size >= (64u << 20)) {
-        std::fprintf(stderr, "EDEN_BIG_BUFFER addr=%#llx wanted=%u MiB size=%u MiB joins=%zu stream_leap=%d\n",
-                     static_cast<unsigned long long>(device_addr), wanted_size >> 20, size >> 20,
-                     overlap.ids.size(), int(overlap.has_stream_leap));
-    }
     const BufferId new_buffer_id =
         slot_buffers.insert(runtime, overlap.begin, size, sparse_compatible);
     auto& new_buffer = slot_buffers[new_buffer_id];

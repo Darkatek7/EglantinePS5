@@ -85,14 +85,8 @@ Inside this repository, in `.deps/`:
   uses Eden's own hash-pinned packages, which its configure step downloads. The PS5 frontend in
   `headless/` builds around it (`headless/inject.cmake`); the PS5 changes to the core itself are
   written in `Eglantine/`, behind `#if` conditionals where the host's test build or a build switch
-  needs other code (`Eglantine/UPSTREAM.md`). `tools/core-source-checks-pending.txt` lists the
-  release source checks of PS5 changes this core does not have yet.
-- **Catch2** at the core's pinned version/hash, fetched by `tools/check-nx2-core.py`
-  into `.local/nx2-core-check` for focused native shader, readback, mapping, command
-  synchronization tests. The two full shader-IR integration
-  tests remain in the core's regular `tests` target. `EDEN_CATCH2_SOURCE` can point
-  at a matching existing Catch2 checkout for offline builds.
-  Console comparison builds can set `env=EDEN_DEV_CAPTURE_EARLY=1` in
+  needs other code (`Eglantine/UPSTREAM.md`).
+- Console comparison builds can set `env=EDEN_DEV_CAPTURE_EARLY=1` in
   `dev-settings.txt` to honour an explicit `capture-once.txt` request during the
   first minute. This requires a DEV Vulkan build; production builds do not read
   this switch or capture frames automatically.

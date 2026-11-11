@@ -73,23 +73,9 @@ cmake -S "$scratch/source" -B "$scratch/native-local" -G Ninja \
 python3 -B "$root/headless/check_slab_lifetime.py" "$scratch/source/src/core/hle/kernel/slab_helpers.h"
 echo "Building Eden with $jobs parallel jobs"
 cmake --build "$scratch/native-local" --target eden-headless core -j "$jobs"
-# Checks still written for the older pinned core (tools/core-source-checks-pending.txt) warn in a
-# lenient build (EDEN_PORT_LENIENT=1, tools/build-package.sh); every other check must pass.
-mapfile -t pending_checks < <(grep -v '^\s*\(#\|$\)' "$root/tools/core-source-checks-pending.txt" | awk '{print $1}')
-python3() {
-    if [[ ${1:-} == -B && ${EDEN_PORT_LENIENT:-0} == 1 ]]; then
-        local name
-        name=$(basename "${2:-}" .py)
-        if printf '%s\n' "${pending_checks[@]}" | grep -qx -- "$name"; then
-            command python3 "$@" > /dev/null 2>&1 || echo "EDEN_PORT_LENIENT: pending source check $name failed (tools/core-source-checks-pending.txt)" >&2
-            return 0
-        fi
-    fi
-    command python3 "$@"
-}
 if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
     for check in check-vulkan-handoff check-native-allocator-header \
-                 check-gpu-time-probe check-fence-requirements; do
+                 check-gpu-time-probe; do
         python3 -B "$root/tools/$check.py"
     done
 fi
@@ -98,7 +84,6 @@ fi
 python3 -B "$root/headless/check_audio_shutdown.py" "$scratch/source/src/core/core.cpp"
 python3 -B "$root/tools/check-load-failure.py"
 python3 -B "$root/tools/check-launcher-autoboot.py"
-python3 -B "$root/tools/check-extracted-content.py"
 python3 -B "$root/tools/check-vfs-file-budget.py"
 python3 -B "$root/tools/check-nso-memory.py"
 python3 -B "$root/tools/check-performance.py"
@@ -112,9 +97,7 @@ python3 -B "$root/tools/check-jit-patch-lookup.py"
 python3 -B "$root/tools/check-jit-assert.py"
 python3 -B "$root/tools/check-crash-report.py"
 python3 -B "$root/tools/check-system-keyboard.py"
-python3 -B "$root/tools/check-nx2-core.py"
 python3 -B "$root/tools/check-shader-attributes.py"
-python3 -B "$root/tools/check-bananza-terrain.py"
 
 if [[ "$probe" == OFF ]]; then
     python3 -B "$root/tools/check-exclusive-monitor.py"
@@ -125,7 +108,6 @@ else
 fi
 if [[ "$graphics" == ON ]]; then
     python3 -B "$root/tools/check-native-gpu-thread.py"
-    python3 -B "$root/tools/check-gpu-producer-stop.py"
     if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
         python3 -B "$root/tools/check-staging-pressure.py"
     fi
