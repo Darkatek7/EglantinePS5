@@ -1,0 +1,111 @@
+From 23e52007e31641a60ede97ad263a83bf6a391a7c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 13:17:44 +0000
+Subject: [PATCH 25/25] experiment: nvhost_as_gpu releases its mutex before
+ queuing GPU work (GPU split deadlock)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../service/nvdrv/devices/nvhost_as_gpu.cpp   | 20 ++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+index 64de5485d2..dde515023a 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+@@ -187,8 +187,12 @@ void nvhost_as_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
+     nx2_session = session_id;
+ }
+ 
++// PS5 experiment: the Nx2* calls below release `mutex` before they queue work for the GPU thread
++// (MapInOrder/RunInOrder). Queuing blocks while the queue is full, and it fills while the front
++// thread drains the back one; the back thread, backing a sparse block on write (Nx2BackSparse),
++// takes `mutex`: Ocarina of Time froze at its first scene load (headless/hang_stacks.h dump).
+ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
+-    std::scoped_lock lock(mutex);
++    std::unique_lock lock(mutex);
+     auto* session = container.GetSession(nx2_session);
+     if (!gmmu || session == nullptr) {
+         LOG_ERROR(Service_NVDRV, "Switch 2 GPU mapping {:#x}+{:#x}: no address space or session",
+@@ -238,6 +242,7 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
+     auto process = fresh ? nullptr
+                          : std::make_shared<Kernel::KScopedAutoObject<Kernel::KProcess>>(
+                                system.Kernel(), session->process);
++    lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+     system.GPU().MapInOrder(
+         gpu_address, size,
+         [gmmu = gmmu.get(), &smmu = system.Host1x().MemoryManager(), process = std::move(process),
+@@ -253,17 +258,18 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
+ }
+ 
+ void nvhost_as_gpu::Nx2Unmap(u64 gpu_address, u64 size) {
+-    std::scoped_lock lock(mutex);
++    std::unique_lock lock(mutex);
+     if (!gmmu) {
+         return;
+     }
+     // The GPU thread may still be running command lists that use the range.
++    lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+     system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, size] { gmmu->Unmap(gpu_address, size); });
+     LOG_DEBUG(Service_NVDRV, "Switch 2 GPU unmapping {:#x}+{:#x}", gpu_address, size);
+ }
+ 
+ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
+-    std::scoped_lock lock(mutex);
++    std::unique_lock lock(mutex);
+     const auto it = nx2_device_ranges.find({cpu_address, size});
+     if (it == nx2_device_ranges.end()) {
+         return;
+@@ -278,6 +284,7 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
+     auto* const mapper = range.heap && session != nullptr ? session->mapper.get() : nullptr;
+     auto& smmu = system.Host1x().MemoryManager();
+     // Queued after the GPU unmaps of the range, so the GPU thread is done with it.
++    lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+     system.GPU().RunInOrder([&smmu, mapper, range, cpu_address, size] {
+         if (range.heap) {
+             if (mapper != nullptr) {
+@@ -292,7 +299,7 @@ void nvhost_as_gpu::Nx2Release(u64 cpu_address, u64 size) {
+ }
+ 
+ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
+-    std::scoped_lock lock(mutex);
++    std::unique_lock lock(mutex);
+     if (!gmmu) {
+         return;
+     }
+@@ -306,6 +313,7 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
+         const DAddr device_address = it->second.second;
+         nx2_sparse_ranges.erase(it);
+         // After the command lists that may still use it.
++        lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+         system.GPU().RunInOrder([gmmu = gmmu.get(), &smmu, gpu_address, size, device_address,
+                                  device_size] {
+             gmmu->Unmap(gpu_address, size);
+@@ -322,6 +330,7 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
+     }
+     nx2_sparse_ranges[gpu_address] = {size, device_address};
+     // On the GPU thread, as in Nx2Map.
++    lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+     system.GPU().MapInOrder(
+         gpu_address, size, [gmmu = gmmu.get(), gpu_address, device_address, size] {
+             gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
+@@ -348,7 +357,7 @@ void nvhost_as_gpu::Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
+ }
+ 
+ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
+-    std::scoped_lock lock(mutex);
++    std::unique_lock lock(mutex);
+     auto it = nx2_sparse_ranges.upper_bound(gpu_address);
+     auto* session = container.GetSession(nx2_session);
+     if (it == nx2_sparse_ranges.begin() || session == nullptr) {
+@@ -365,6 +374,7 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
+     // whose contents are now what the game's memory holds there.
+     const DAddr device = device_address + (gpu_address - start);
+     auto& smmu = system.Host1x().MemoryManager();
++    lock.unlock(); // PS5 experiment: not held while the GPU queue may be full (see Nx2Map)
+     system.GPU().MapInOrder(
+         gpu_address, size, [&smmu, device, cpu_address, size, asid = session->asid] {
+             smmu.Unmap(device, size);
+-- 
+2.47.3
+

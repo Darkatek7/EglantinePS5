@@ -1,7 +1,7 @@
 From 76a5e387640838808d7b2de4d72b6a72b16652fa Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 12:01:24 +0000
-Subject: [PATCH 18/22] experiment diag: report buffer-cache buffers of 64 MiB
+Subject: [PATCH 18/25] experiment diag: report buffer-cache buffers of 64 MiB
  and more on stderr
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

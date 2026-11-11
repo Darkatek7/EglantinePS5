@@ -1,7 +1,7 @@
 From 7ab449b704feb478fb601f1949b96b10fe56446e Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:24:22 +0000
-Subject: [PATCH 03/22] 0030-uniform-prefetch
+Subject: [PATCH 03/25] 0030-uniform-prefetch
 
 (cherry picked from commit b7ecc2239e9e592da3b8ab843a28ee4dabc9c838)
 ---

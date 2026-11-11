@@ -2,6 +2,7 @@
 #include <atomic>
 #include "performance.h"
 #include "crash_report.h"
+#include "hang_stacks.h"
 #include "hud.h"
 #include "stall_watchdog.h"
 #include "../src/fastmem.h"
@@ -561,6 +562,9 @@ static std::atomic<unsigned long long> largest_free_block{0};
 // The driver's own buffer bytes (RADV's PS5 winsys counter, renamed by tools/isolate-radv.py).
 extern "C" unsigned long long eden_radv_private_radv_ps5_allocated_bytes __attribute__((weak));
 static void RefreshFreeMemory() {
+#if defined(PS5_NATIVE) || defined(__linux__)
+    Eden::HangStacks::Beat();
+#endif
     static std::atomic<long long> checked_ns{0};
     const long long now = NowNs();
     if (const long long last = checked_ns.load(std::memory_order_relaxed); last != 0 && now - last < 100'000'000)
@@ -964,6 +968,9 @@ void ReportGpuThread(unsigned frame) {
 }
 
 void RegisterWorker(const char* name) {
+#if defined(PS5_NATIVE) || defined(__linux__)
+    Eden::HangStacks::Note(name);  // EDEN_HANG_STACKS=1 (hang_stacks.h)
+#endif
 #ifdef PS5_NATIVE
     MkwNativeSample::Register(name);
 #endif

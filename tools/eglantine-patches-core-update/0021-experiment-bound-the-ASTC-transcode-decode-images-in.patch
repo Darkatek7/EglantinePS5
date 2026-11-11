@@ -1,7 +1,7 @@
 From 61ad5d24f639bc57fa7bfefd94a2077b6d82ed70 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 12:19:20 +0000
-Subject: [PATCH 21/22] experiment: bound the ASTC transcode decode images in
+Subject: [PATCH 21/25] experiment: bound the ASTC transcode decode images in
  flight (PS5 shared pool)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

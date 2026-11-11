@@ -1,7 +1,7 @@
 From 6b63a1049abe4dd9b91a76249dd4c69be1858b28 Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:24:23 +0000
-Subject: [PATCH 13/22] 0057-svc-memory-stats
+Subject: [PATCH 13/25] 0057-svc-memory-stats
 
 ---
  src/core/hle/kernel/svc/svc_code_memory.cpp   |  3 +

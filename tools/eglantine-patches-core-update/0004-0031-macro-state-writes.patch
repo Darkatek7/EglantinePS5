@@ -1,7 +1,7 @@
 From c98c9f5b44aeb6589e72b5312f8ee100bf39a06c Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:24:22 +0000
-Subject: [PATCH 04/22] 0031-macro-state-writes
+Subject: [PATCH 04/25] 0031-macro-state-writes
 
 (cherry picked from commit 9464603c08cace161837030eae6be6ffdb7ed1e3)
 ---

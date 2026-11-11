@@ -1,7 +1,7 @@
 From 381f33add92ea7b2db3781e434af89133372f9b7 Mon Sep 17 00:00:00 2001
 From: Heyde-Moura <moura.heyde@gmail.com>
 Date: Wed, 11 Nov 2026 10:52:54 +0000
-Subject: [PATCH 09/22] experiment: Shader::Info::uses_tensor_mul_add for the
+Subject: [PATCH 09/25] experiment: Shader::Info::uses_tensor_mul_add for the
  PS5 NIR backend
 
 ---

@@ -1,7 +1,7 @@
 From 192d7c2757c5618837633115dec1639b2f3c41ab Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 12:14:37 +0000
-Subject: [PATCH 20/22] experiment: uneven-mip ASTC stays BC3 on the PS5 unless
+Subject: [PATCH 20/25] experiment: uneven-mip ASTC stays BC3 on the PS5 unless
  EDEN_NX2_UNEVEN_MIP_RGBA8=1
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
