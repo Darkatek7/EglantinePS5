@@ -322,6 +322,10 @@ file(WRITE "${MULTIPLAYER_OUTPUT}/network_interface.cpp.in" "${interface_source}
 configure_file("${MULTIPLAYER_OUTPUT}/network_interface.cpp.in"
     "${MULTIPLAYER_OUTPUT}/network_interface.cpp" COPYONLY)
 
+get_property(eden_mp_before GLOBAL PROPERTY EDEN_PORT_FAILURES)
+list(LENGTH eden_mp_before eden_mp_before)
+file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.h" eden_proxy_header_original)
+file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.cpp" eden_proxy_source_original)
 file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.h" proxy_header)
 multiplayer_replace(proxy_header "    bool IsOpened() const override;"
     "    bool IsOpened() const override;\n    std::optional<PollEvents> PollProxy(PollEvents events) override;")
@@ -335,9 +339,6 @@ multiplayer_replace(proxy_header "    Protocol protocol;"
     "    Protocol protocol{};\n    std::weak_ptr<RoomMember> receiving_member;\n    RoomMember::CallbackHandle<ProxyPacket> packet_callback;")
 multiplayer_replace(proxy_header "    std::queue<ProxyPacket> received_packets;"
     "    std::queue<ProxyPacket> received_packets;\n    std::size_t received_bytes = 0;")
-file(WRITE "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h.in" "${proxy_header}")
-configure_file("${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h.in"
-    "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h" COPYONLY)
 file(READ "${MULTIPLAYER_SOURCE}/src/core/internal_network/socket_proxy.cpp" proxy_source)
 multiplayer_replace(proxy_source "#include <chrono>"
     "#include <chrono>\n#include \"multiplayer_proxy.h\"")
@@ -409,10 +410,24 @@ multiplayer_replace(proxy_source "bool ProxySocket::IsOpened() const {"
 }
 
 bool ProxySocket::IsOpened() const {]=])
+# EDEN_PORT_LENIENT: a section with a changed anchor keeps upstream's header and source together.
+get_property(eden_mp_after GLOBAL PROPERTY EDEN_PORT_FAILURES)
+list(LENGTH eden_mp_after eden_mp_after)
+if(NOT eden_mp_after EQUAL eden_mp_before)
+    set(proxy_header "${eden_proxy_header_original}")
+    set(proxy_source "${eden_proxy_source_original}")
+endif()
+file(WRITE "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h.in" "${proxy_header}")
+configure_file("${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h.in"
+    "${MULTIPLAYER_SOCKET_HEADERS}/core/internal_network/socket_proxy.h" COPYONLY)
 file(WRITE "${MULTIPLAYER_OUTPUT}/socket_proxy.cpp.in" "${proxy_source}")
 configure_file("${MULTIPLAYER_OUTPUT}/socket_proxy.cpp.in"
     "${MULTIPLAYER_OUTPUT}/socket_proxy.cpp" COPYONLY)
 
+get_property(eden_mp_before GLOBAL PROPERTY EDEN_PORT_FAILURES)
+list(LENGTH eden_mp_before eden_mp_before)
+file(READ "${MULTIPLAYER_SOURCE}/src/core/hle/service/sockets/bsd.h" eden_bsd_header_original)
+file(READ "${MULTIPLAYER_SOURCE}/src/core/hle/service/sockets/bsd.cpp" eden_bsd_source_original)
 file(READ "${MULTIPLAYER_SOURCE}/src/core/hle/service/sockets/bsd.h" bsd_header)
 multiplayer_replace(bsd_header "#include <memory>" "#include <memory>\n#include <atomic>\n#include \"multiplayer_descriptors.h\"")
 multiplayer_replace(bsd_header "    static constexpr size_t MAX_FD = 128;"
@@ -431,9 +446,6 @@ multiplayer_replace(bsd_header [=[    /// Callback to parse and handle a receive
 multiplayer_replace(bsd_header [=[    // Callback identifier for the OnProxyPacketReceived event.
     Network::RoomMember::CallbackHandle<Network::ProxyPacket> proxy_packet_received;]=] "")
 file(MAKE_DIRECTORY "${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets")
-file(WRITE "${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h.in" "${bsd_header}")
-configure_file("${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h.in"
-    "${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h" COPYONLY)
 file(READ "${MULTIPLAYER_SOURCE}/src/core/hle/service/sockets/bsd.cpp" bsd_source)
 multiplayer_replace(bsd_source [=[void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
     for (auto& optional_descriptor : file_descriptors) {
@@ -473,6 +485,15 @@ multiplayer_replace(bsd_source "    if (!IsFileDescriptorValid(fd)) {"
     "    const auto descriptor_entry = file_descriptors.Get(fd);\n    if (!descriptor_entry) {")
 multiplayer_replace(bsd_source "file_descriptors[fd]" "descriptor_entry")
 string(APPEND bsd_source "\nnamespace Service::Sockets {\n#include \"multiplayer_bsd.inc\"\n}\n")
+get_property(eden_mp_after GLOBAL PROPERTY EDEN_PORT_FAILURES)
+list(LENGTH eden_mp_after eden_mp_after)
+if(NOT eden_mp_after EQUAL eden_mp_before)
+    set(bsd_header "${eden_bsd_header_original}")
+    set(bsd_source "${eden_bsd_source_original}")
+endif()
+file(WRITE "${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h.in" "${bsd_header}")
+configure_file("${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h.in"
+    "${MULTIPLAYER_SOCKET_HEADERS}/core/hle/service/sockets/bsd.h" COPYONLY)
 file(WRITE "${MULTIPLAYER_OUTPUT}/bsd.cpp.in" "${bsd_source}")
 configure_file("${MULTIPLAYER_OUTPUT}/bsd.cpp.in" "${MULTIPLAYER_OUTPUT}/bsd.cpp" COPYONLY)
 
