@@ -4225,7 +4225,10 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             // Mario Kart World's lighting passes read past 8 MiB from theirs: capped there, the
             // reads came back zero and lit land and characters too dark. Written bindings keep
             // a cap: a write marks the whole binding GPU-modified.
-            const bool native_compute = native_pointer && compute;
+            // PS5 experiment: native compute reads keep the 8 MiB cap below. With #1231's 1 GiB reach
+            // Ocarina of Time's compute passes made buffers the console's shared pool could not hold
+            // (VK_ERROR_OUT_OF_DEVICE_MEMORY 90 s into the game).
+            const bool native_compute = false && native_pointer && compute;
             if ((table_pointer || native_compute) && !is_written) {
                 const u64 reach = (std::min)(runtime.GetMaxStorageBufferRange(), u64{1_GiB});
                 const u32 limit = static_cast<u32>(reach - (std::min)(reach, u64{64_KiB}));
