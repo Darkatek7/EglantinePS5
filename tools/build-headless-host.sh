@@ -18,7 +18,7 @@ fi
 scratch=$(cat .local/headless-cache)
 [[ "$scratch" == "$cache_parent"/ps5-eden-headless.* && "$(cat "$scratch/owner")" == "$root" ]]
 eden="$scratch/source"
-# As in prepare-build.sh: the source is the Eglantine submodule.
+# As in prepare-build.sh: the source is Eglantine/ in this repository.
 bash tools/sync-eden-source.sh "$eden"
 # FFmpeg links configure probes through the compiler driver, not raw ld.
 # Keep the derivative in our cache and regenerate its Makefile when it changes.

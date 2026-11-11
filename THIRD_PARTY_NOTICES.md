@@ -6,15 +6,16 @@ builds on the following projects, each under its own license.
 ## Emulator
 
 - **[Eglantine](https://github.com/Djihads80/Eglantine)**, GPL-3.0-or-later, a fork of
-  **[Eden](https://github.com/eden-emulator/mirror)**. The emulator core, built from the commit the
-  `Eglantine` submodule records, together with the dependencies Eden
+  **[Eden](https://github.com/eden-emulator/mirror)**. The emulator core, kept in this repository as
+  `Eglantine/` (Eglantine/UPSTREAM.md), together with the dependencies Eden
   fetches and pins itself: Dynarmic, Boost, fmt, xbyak, zstd, lz4, Opus, SDL3,
   simpleini, sirit, SPIRV-Headers, Vulkan-Headers, Vulkan-Utility-Libraries,
   Vulkan Memory Allocator, ENet, frozen, cpp-httplib, nlohmann/json, and the time
   zone data. Each keeps its upstream license.
 - **[Zortos Eglantine fork](https://github.com/zortos293/Eglantine)**,
-  GPL-3.0-or-later. Referenced directly by the `Eglantine` submodule, including its
-  core, native shader, readback, service, runtime and test changes. The maintained
+  GPL-3.0-or-later. `Eglantine/` was imported from its nx2 branch (babdb6bb75) and
+  is changed here directly, including its core, native shader, readback, service, runtime and
+  test changes. The maintained
   Mario Kart performance patch also carries later core adaptations/backports;
   upstream source retains its GPL-3.0-or-later notices.
 - **[Catch2](https://github.com/catchorg/Catch2)**, BSL-1.0. Used by the focused
@@ -97,9 +98,9 @@ builds on the following projects, each under its own license.
   GPL-3.0-or-later. The DualSense HD rumble through audio haptics with its
   motor fallback (`headless/pad_haptics.*`, its wiring in `headless/pad.cpp`
   and its host checks), the vibration strength setting, and the decoding of
-  the Switch 2 vibration batches (HID command 214,
-  `tools/eglantine-patches/0039-switch2-vibration-values.patch`) are adapted
-  from ProsperoEden.
+  the Switch 2 vibration batches (HID command 214; in the earlier pinned core's
+  patch series as 0039, not yet carried into `Eglantine/`) are adapted from
+  ProsperoEden.
 - **[ProsperoPuzzles](https://github.com/blackbearreloaded/ProsperoPuzzles)**,
   GPL-3.0-or-later. The launcher's drawing, text, animation and sound code
   (`headless/eglantineps5/pe`) started there.

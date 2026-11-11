@@ -79,16 +79,24 @@ cmake --build "$scratch/native-local" --target eden-headless core -j "$jobs"
 python3 -B "$root/tools/check-sparse-header.py" "$scratch/native-local"
 python3 -B "$root/tools/check-macro-headers.py" "$scratch/native-local"
 python3 -B "$root/tools/check-multiplayer-headers.py" "$scratch/native-local"
+# Checks still written for the older pinned core (tools/core-source-checks-pending.txt) warn in a
+# lenient build (EDEN_PORT_LENIENT=1, tools/build-package.sh); every other check must pass.
+mapfile -t pending_checks < <(grep -v '^\s*\(#\|$\)' "$root/tools/core-source-checks-pending.txt" | awk '{print $1}')
+python3() {
+    if [[ ${1:-} == -B && ${EDEN_PORT_LENIENT:-0} == 1 ]]; then
+        local name
+        name=$(basename "${2:-}" .py)
+        if printf '%s\n' "${pending_checks[@]}" | grep -qx -- "$name"; then
+            command python3 "$@" > /dev/null 2>&1 || echo "EDEN_PORT_LENIENT: pending source check $name failed (tools/core-source-checks-pending.txt)" >&2
+            return 0
+        fi
+    fi
+    command python3 "$@"
+}
 if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
-    # EDEN_PORT_LENIENT=1 (experimental core updates): these checks compile pinned-source excerpts;
-    # a failure is reported and the build goes on.
     for check in check-vulkan-handoff check-transient-images check-native-allocator-header \
                  check-gpu-time-probe check-fence-requirements; do
-        if [[ ${EDEN_PORT_LENIENT:-0} == 1 ]]; then
-            python3 -B "$root/tools/$check.py" > /dev/null 2>&1 || echo "EDEN_PORT_LENIENT: $check failed (pinned-source check)" >&2
-        else
-            python3 -B "$root/tools/$check.py"
-        fi
+        python3 -B "$root/tools/$check.py"
     done
 fi
 # Source checks of the release configuration (development builds opt out: EDEN_SKIP_SOURCE_CHECKS=1).

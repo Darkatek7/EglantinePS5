@@ -1,6 +1,6 @@
 # EglantinePS5: core update experiment (Eglantine upstream babdb6bb75)
 
-2026-11-11. Worktree `~/Code/EglantinePS5-wt-core`, branch `exp/core-update` (local, not pushed). The submodule is on branch `exp/core-update-patches`. Nothing is installed: every console run went through the runner, which put main's release back afterwards.
+2026-11-11. Worktree `~/Code/EglantinePS5-wt-core`, branch `exp/core-update`; since then the result is the in-repo `Eglantine/` (branch `core/in-repo`, Eglantine/UPSTREAM.md), where the patch files below became ordinary commits. The submodule is on branch `exp/core-update-patches`. Nothing is installed: every console run went through the runner, which put main's release back afterwards.
 
 ## Summary
 

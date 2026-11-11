@@ -22,7 +22,7 @@ scratch=$(cat .local/headless-cache)
 [[ "$(cat "$scratch/owner")" == "$root" ]] || { echo "Build cache $scratch belongs to another checkout" >&2; exit 1; }
 
 eden="$scratch/source"
-# The emulator source is the Eglantine submodule; a tree synced from another commit of it is
+# The emulator source is Eglantine/ in this repository; a tree synced from another state of it is
 # synced again (Eden's package cache, downloads only, is kept).
 bash tools/sync-eden-source.sh "$eden"
 # Optional: seed Eden's package cache from another checkout's (CI reuses a development cache).
