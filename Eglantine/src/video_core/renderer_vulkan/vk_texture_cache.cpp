@@ -235,6 +235,17 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
         Settings::GetAstcRecompression() == Settings::AstcRecompression::Uncompressed) {
         return false;
     }
+    // PS5 experiment: off unless EDEN_NX2_UNEVEN_MIP_RGBA8=1. The console's driver is RADV, and
+    // nearly every full mip chain has an uneven level (1536x1536 at level 8): Ocarina of Time's
+    // textures became RGBA8 (4x BC3), 4.7 GB of images, and the shared pool ran out at the first
+    // scene (VK_ERROR_OUT_OF_DEVICE_MEMORY 55-90 s in).
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_UNEVEN_MIP_RGBA8");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!enabled) {
+        return false;
+    }
     const VkDriverIdKHR id = device.GetDriverID();
     if (id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
         id != VK_DRIVER_ID_MESA_RADV) {
