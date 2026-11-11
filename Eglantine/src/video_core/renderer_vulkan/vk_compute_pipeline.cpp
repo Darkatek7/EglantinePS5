@@ -20,6 +20,7 @@
 #include "video_core/renderer_vulkan/pipeline_build_trace.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_optimization.h"
+#include "video_core/renderer_vulkan/nir_handoff.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
@@ -313,6 +314,9 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
                                std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - trace_begin)
                                    .count());
+            if (const auto detach = NirHandoff::detach.load(std::memory_order_acquire)) {
+                detach(reinterpret_cast<void*>(*spv_module));
+            }
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Driver rejected compute shader {:016X}: {}", shader_hash,
                          exception.what());

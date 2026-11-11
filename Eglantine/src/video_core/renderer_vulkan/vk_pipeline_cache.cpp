@@ -49,6 +49,7 @@
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_shader_emission.h"
+#include "video_core/renderer_vulkan/nir_handoff.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/vertex_repack.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
@@ -2891,7 +2892,9 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         env.Dump(hash, key.unique_hash);
     }
 
+    const auto translate_start = std::chrono::steady_clock::now();
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    const auto translate_end = std::chrono::steady_clock::now();
     const VkDriverIdKHR driver_id = device.GetDriverID();
     const bool needs_shared_mem_clamp =
         driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||

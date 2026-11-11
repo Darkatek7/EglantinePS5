@@ -7,7 +7,10 @@
 #include <algorithm>
 #include <array>
 #include <bitset>
+#include <map>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <optional>
 #include <vector>
 #include <queue>
