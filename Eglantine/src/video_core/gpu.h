@@ -136,6 +136,20 @@ class Host1x;
 
 class MemoryManager;
 
+/// PS5 experiment: while one is alive on a thread, that thread's GPU::RunInOrder and
+/// GPU::MapInOrder calls reach the GPU thread's queue only when the outermost one ends, in the
+/// order they were made (MapInOrder's range counts as pending at once). Queuing blocks while the
+/// queue is full, and it fills while the GPU's front thread drains the back one; the nx2:gpu
+/// handlers open one before taking the region lock that the back thread takes to back sparse
+/// blocks, so they never wait on the queue while holding it.
+class DeferGpuQueue {
+public:
+    DeferGpuQueue();
+    ~DeferGpuQueue();
+    DeferGpuQueue(const DeferGpuQueue&) = delete;
+    DeferGpuQueue& operator=(const DeferGpuQueue&) = delete;
+};
+
 class GPU final {
 public:
     explicit GPU(Core::System& system, bool is_async, bool use_nvdec);

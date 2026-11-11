@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <list>
 #include <memory>
+#include <vector>
 #include <utility>
 
 #include "common/assert.h"
@@ -47,6 +48,27 @@
 #include "video_core/shader_notify.h"
 
 namespace Tegra {
+
+namespace {
+thread_local unsigned defer_depth = 0;
+thread_local std::vector<std::function<void()>> deferred_queue;
+} // Anonymous namespace
+
+DeferGpuQueue::DeferGpuQueue() {
+    ++defer_depth;
+}
+
+DeferGpuQueue::~DeferGpuQueue() {
+    if (--defer_depth != 0) {
+        return;
+    }
+    // Queued now, outside the caller's locks; a deferred call may defer nothing more.
+    auto queued = std::move(deferred_queue);
+    deferred_queue.clear();
+    for (auto& push : queued) {
+        push();
+    }
+}
 
 struct GPU::Impl {
     explicit Impl(Core::System& system_, bool is_async_, bool use_nvdec_)
@@ -273,17 +295,28 @@ struct GPU::Impl {
     }
 
     void RunInOrder(std::function<void()>&& func) {
+        if (defer_depth != 0) {
+            deferred_queue.push_back([this, func = std::move(func)]() mutable {
+                gpu_thread.Run(std::move(func), is_async);
+            });
+            return;
+        }
         gpu_thread.Run(std::move(func), is_async);
     }
 
     void MapInOrder(GPUVAddr gpu_addr, u64 size, std::function<void()>&& func) {
         const u64 id = pending_maps.Add(gpu_addr, size);
-        gpu_thread.Run(
-            [this, id, func = std::move(func)] {
-                func();
-                pending_maps.Remove(id);
-            },
-            is_async, true);
+        std::function<void()> run = [this, id, func = std::move(func)] {
+            func();
+            pending_maps.Remove(id);
+        };
+        if (defer_depth != 0) {
+            deferred_queue.push_back([this, run = std::move(run)]() mutable {
+                gpu_thread.Run(std::move(run), is_async, true);
+            });
+            return;
+        }
+        gpu_thread.Run(std::move(run), is_async, true);
     }
 
     bool IsMapPending(GPUVAddr gpu_addr, u64 size) const {

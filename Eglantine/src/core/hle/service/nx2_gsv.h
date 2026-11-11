@@ -609,6 +609,7 @@ private:
             LOG_DEBUG(Service, "nx2:gpu 102 destroy handle={} [{:#x}, +{:#x}] slot={}", handle,
                       address, size, w[3]);
             if (size != 0) {
+                const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
                 std::scoped_lock lk{m_region_mutex};
                 std::vector<std::pair<u64, u64>> tiles;
                 for (const auto& [tile_address, tile] : m_gpu_only_tiles) {
@@ -664,6 +665,7 @@ private:
                  w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12]);
         if (last > start && ((last + 1 - start) % Core::Memory::YUZU_PAGESIZE) == 0) {
             const u64 size = last + 1 - start;
+            const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
             if ((w[7] & SparseRegionFlag) == 0) {
@@ -737,6 +739,8 @@ private:
             rb.Push(ResultSuccess);
             return;
         }
+        // After the lock, with SignalAfterGpu below still after the unmaps (Tegra::DeferGpuQueue).
+        const Tegra::DeferGpuQueue defer;
         std::scoped_lock lk{m_region_mutex};
         FreeReleasedRegions();
         if (m_gpu_only_ranges.erase(first) != 0 && last > first) {
@@ -791,6 +795,7 @@ private:
         const size_t count = data.size() / sizeof(SparseMapRequest);
         std::vector<u8> kinds(count);
         {
+            const Tegra::DeferGpuQueue defer; // after the lock (Tegra::DeferGpuQueue)
             std::scoped_lock lk{m_region_mutex};
             FreeReleasedRegions();
             ++m_tile_calls;
