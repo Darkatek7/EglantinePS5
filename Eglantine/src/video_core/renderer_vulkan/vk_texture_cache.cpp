@@ -5158,7 +5158,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     // each decode image is an RGBA copy of every level, alive until the GPU used it. A scene load
     // makes hundreds in a burst, and the pool the console's GPU shares with the CPU ran out
     // (Ocarina of Time: driver memory 0.6 -> 5.2 GB in 4 s). Copies in flight and kept for reuse
-    // are bounded by bytes (256 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB), waiting for the oldest
+    // are bounded by bytes (64 MiB, or EDEN_PS5_TRANSCODE_PENDING_MIB; 256 MiB still thrashed), waiting for the oldest
     // only, and what is recorded is submitted every 32 MiB so the GPU works through them.
     {
         using namespace Common::Literals;
@@ -5171,7 +5171,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         };
         static const u64 held_limit = [] {
             const char* value = std::getenv("EDEN_PS5_TRANSCODE_PENDING_MIB");
-            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{256_MiB};
+            return value != nullptr ? std::strtoull(value, nullptr, 10) << 20 : u64{64_MiB};
         }();
         PendingTranscode shape{};
         shape.width = width;

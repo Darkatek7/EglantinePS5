@@ -339,6 +339,13 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
         (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
     minimum_memory =
         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
+    // Patch 0024 (switch2-texture-cache-ceiling), ported: a Switch 2 title shares the console's
+    // one pool with its own memory, Eden's heap and the driver; images held to 4.5/5.3 GB ran it
+    // out, 3.5/4 GB did not, at the same FPS. A ceiling only; the variables below still override.
+    if (Settings::CurrentProgramIsSwitch2()) {
+        expected_memory = (std::min)(expected_memory, u64{3584} << 20);
+        critical_memory = (std::min)(critical_memory, u64{4096} << 20);
+    }
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB raise the collector's thresholds past
     // MaxCriticalMemory, but never past what the device budget allows: set outright, they kept
     // the cache above a shrinking budget (other programs' video memory, out-of-memory margins) and
