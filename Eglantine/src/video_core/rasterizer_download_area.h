@@ -22,6 +22,8 @@ struct RasterizerDownloadArea {
     /// What guest memory lacks there is on its way for an earlier read: nothing to flush, only to
     /// wait for (RasterizerInterface::FinishRead).
     bool in_flight{};
+    /// Read-trace diagnostics (the PS5 layer's ordered_read_trace): 0 here.
+    u64 completed_generation{};
 };
 
 /// Downloads for guest CPU reads that are submitted but not yet written to guest memory
