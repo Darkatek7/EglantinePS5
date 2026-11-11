@@ -10,7 +10,7 @@
 
 **EglantinePS5 is an unofficial PlayStation 5 port of [Eglantine](https://github.com/Djihads80/Eglantine)**, a Switch 2 capable fork of [Eden](https://github.com/eden-emulator/mirror) - an accurate, high-performance emulator. All credit for the emulator core belongs to the Eglantine and Eden projects and their contributors. EglantinePS5 is not affiliated with or endorsed by the Eglantine team, the Eden team or Sony.
 
-This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.000**.
+This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.001** (a pre-release).
 
 ## Source code
 
@@ -362,6 +362,16 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 ### Upgrading from an earlier alpha
 
 Earlier versions read everything from `/data/homebrew/PPSA98515/assets/`. That folder keeps working until you choose a game files folder, and settings are migrated automatically on first launch. To move to the new layout, move `assets/keys`, `assets/firmware` and `assets/roms` into any folder, then select it in **Settings > Game files**. The release ZIP contains no user files, so copy its app files over your installation without deleting your own data.
+
+## Changes in v1.000.001
+
+First pre-release of EglantinePS5 on the Eglantine core (version numbering starts over; earlier tags were removed). Not a stable release.
+
+- **More games start.** Games packed as NUP containers start, and unencrypted games start without keys or firmware.
+- **The Legend of Zelda: Ocarina of Time** boots and renders gameplay (title screen, world, Switch 2 audio streams); its anti-aliasing network is skipped by default (Settings > Video).
+- **Mario Kart World memory.** Fixes for the race-load out-of-memory and memory leaks: guest memory packing, idle blocks given back, JIT code cache taken in smaller pieces, Mesa cache files capped.
+- **Faster draws and uploads** in several titles (draw delta path, texture memo, buffer sync early-outs, native MME macros on by default).
+- **More robust GPU memory handling** (RADV trims only granules unused for 2 s).
 
 ## Changes in v1.000.110
 
