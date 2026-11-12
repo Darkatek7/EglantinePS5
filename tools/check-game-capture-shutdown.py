@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Keep production PS5 presentation free of diagnostic GPU readbacks."""
 from pathlib import Path
+from eglantine_source import EGLANTINE, source as eglantine_source  # the core, part of this repository
 
 root = Path(__file__).resolve().parents[1]
 main = (root / 'headless/main.cpp').read_text()
 graphics = (root / 'headless/graphics.cpp').read_text()
 cache = Path((root / '.local/headless-cache').read_text().strip())
-renderer = (cache / 'native-local/headless/renderer_opengl.cpp').read_text()
+renderer = eglantine_source('src/video_core/renderer_opengl/renderer_opengl.cpp')
 
 assert 'm_current_frame != 29' not in renderer
 assert 'EDEN_GAME_CAPTURE_TARGET' not in renderer

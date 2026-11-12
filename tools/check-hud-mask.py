@@ -17,7 +17,8 @@ assert 'glyphs[i >> 1] >> uint((i & 1) * 16)) & 0x7fffu' in frag and 'i < 56' in
 graphics = read('graphics.cpp')
 assert '(glyphs[i>>1]>>uint((i&1)*16))&0x7fffu' in graphics and 'i<56' in graphics
 # The Vulkan overlay is placed by PlaceHud and given the rows its cells are laid out for.
-draw = read('vulkan_hud_draw.inc')
+from eglantine_source import source as eglantine_source  # the core, part of this repository
+draw = eglantine_source('src/video_core/renderer_vulkan/present/window_adapt_pass.cpp')
 assert 'Eden::PlaceHud(hud, render_area.width, render_area.height)' in draw
 assert 'constants.width = hud_place.cell_rows;' in draw
 # The renderers read the fields, size and corner with the session's settings, and the machine's
@@ -26,9 +27,8 @@ assert graphics.count('LoadHudPreferences();') == 1 and 'WantGpuTime();' in grap
 assert graphics.count('MachineNow();') == 2
 assert 'hud_fields.load(std::memory_order_relaxed)' in graphics.split('void GraphicsWindow::OnFrameDisplayed()', 1)[1]
 # The scheduler's timestamp probe sees what the overlay asks for (hud_gpu_time.h).
-prepare = (root / 'tools/prepare-vulkan-port.py').read_text()
-assert '#include \\"hud_gpu_time.h\\"' in prepare or '#include "hud_gpu_time.h"' in prepare.replace('\\"', '"')
-probe = read('gpu_time_probe.inc')
+probe = eglantine_source('src/video_core/renderer_vulkan/vk_scheduler.cpp')
+assert '#include "hud_gpu_time.h"' in probe
 assert '::Eden::Hud::gpu_time_wanted' in probe and '::Eden::Hud::gpu_busy_ns.fetch_add' in probe
 # Settings: stored under the video keys, and the launcher has a row for every field bit.
 store = read('settings_store.h')

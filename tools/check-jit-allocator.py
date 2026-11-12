@@ -3,9 +3,10 @@
 from pathlib import Path
 import subprocess
 import tempfile
+from eglantine_source import EGLANTINE, source as eglantine_source  # the core, part of this repository
 root = Path(__file__).resolve().parents[1]
 scratch = Path((root / '.local/headless-cache').read_text().strip())
-code = (scratch / 'native-local/headless/block_of_code.cpp').read_text()
+code = eglantine_source('src/dynarmic/src/dynarmic/backend/x64/block_of_code.cpp')
 assert ', EdenJitAllocator())' in code
 source = r'''
 #include "jit-allocator.h"

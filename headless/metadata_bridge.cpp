@@ -42,7 +42,12 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/nca_metadata.h"
+#if __has_include("core/file_sys/nup.h")
 #include "core/file_sys/nup.h"
+#define EDEN_HAS_NUP_ARCHIVE 1
+#else
+#include "core/file_sys/nup_container.h"
+#endif
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/submission_package.h"
@@ -81,6 +86,20 @@ FileSys::VirtualDir OpenControlRomFs(const FileSys::VirtualFile& file, bool xci)
 // and the icon. They are given as a control RomFS would hold them (control.nacp,
 // icon_AmericanEnglish.dat), and its title record in *title. nullptr when the file is no NUP.
 FileSys::VirtualDir OpenNupControl(const FileSys::VirtualFile& file, std::string* title = nullptr) {
+#ifndef EDEN_HAS_NUP_ARCHIVE
+    // This Eden core reads NUP containers itself (core/file_sys/nup_container.h): the base
+    // package's title name and icon (no NACP in the container's meta here).
+    if (!FileSys::NupContainer::IsNupFile(file)) return {};
+    FileSys::NupContainer container(file);
+    const auto base = container.FindBasePackage();
+    if (container.GetStatus() != Loader::ResultStatus::Success || !base) return {};
+    const auto& package = container.GetPackages()[*base];
+    std::vector<FileSys::VirtualFile> files;
+    if (!package.icon.empty())
+        files.push_back(std::make_shared<FileSys::VectorVfsFile>(package.icon, "icon_AmericanEnglish.dat"));
+    if (title) *title = package.title_name;
+    return std::make_shared<FileSys::VectorVfsDirectory>(std::move(files));
+#else
     if (!FileSys::Nup::Archive::HasMagic(file)) return {};
     std::string error;
     const auto archive = FileSys::Nup::Archive::OpenMetadata(file, &error);
@@ -102,6 +121,7 @@ FileSys::VirtualDir OpenNupControl(const FileSys::VirtualFile& file, std::string
         *title = name != meta.end() ? std::string(name->second.begin(), name->second.end()) : std::string{};
     }
     return std::make_shared<FileSys::VectorVfsDirectory>(std::move(files));
+#endif
 }
 
 std::string ReadTitle(const FileSys::VirtualDir& romfs) {
@@ -240,8 +260,16 @@ uint64_t eden_game_title_id(const char* rom_path) {
         return package.GetStatus() == Loader::ResultStatus::Success ? package.GetProgramTitleID() : 0;
     }
     if (path.ends_with(".nup")) {
+#ifdef EDEN_HAS_NUP_ARCHIVE
         const auto archive = FileSys::Nup::Archive::OpenMetadata(file);
         return archive ? archive->ProgramTitleID() : 0;
+#else
+        FileSys::NupContainer container(file);
+        const auto base = container.FindBasePackage();
+        return container.GetStatus() == Loader::ResultStatus::Success && base
+                   ? container.GetPackages()[*base].title_id
+                   : 0;
+#endif
     }
     return 0;
 }
