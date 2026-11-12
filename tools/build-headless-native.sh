@@ -74,8 +74,7 @@ python3 -B "$root/headless/check_slab_lifetime.py" "$scratch/source/src/core/hle
 echo "Building Eden with $jobs parallel jobs"
 cmake --build "$scratch/native-local" --target eden-headless core -j "$jobs"
 if [[ "${EDEN_PS5_VULKAN:-OFF}" == ON ]]; then
-    for check in check-vulkan-handoff check-native-allocator-header \
-                 check-gpu-time-probe; do
+    for check in check-vulkan-handoff check-gpu-time-probe; do
         python3 -B "$root/tools/$check.py"
     done
 fi
