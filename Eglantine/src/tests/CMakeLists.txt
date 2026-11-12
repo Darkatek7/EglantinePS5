@@ -18,6 +18,7 @@ add_executable(tests
     video_core/semaphore_waiters.cpp
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
+    core/nx2_thread_stats.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
     common/dkb_cpu_trace.cpp

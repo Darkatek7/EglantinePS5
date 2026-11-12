@@ -511,6 +511,9 @@ private:
     };
 
     CodePtr GetCurrentBlock() {
+        if (conf.counters) {
+            ++conf.counters->block_lookups;
+        }
         return GetBlock(GetCurrentLocation());
     }
 
