@@ -2726,17 +2726,46 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
             ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
             return false;
         }
-        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
-        if (buffer_cache.OnCPUWrite(addr, size)) {
-            return true;
-        }
-        const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
-        DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
-        for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
-            if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
-                buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
-                break;
+        // The pages the write untracks change their host protection after the lock is dropped:
+        // drawing waited for those system calls (~1 µs each, thousands a second at Ocarina of
+        // Time's water). A write trapping on a page still protected until then finds the page
+        // already untracked and changes nothing. Off the scheduler's owner the write only
+        // untracks pages (BufferCache::WriteMemory uploads only on the owner), which is all that
+        // may wait. Device unmaps wait for these changes, as one applied to an unmapped page is
+        // lost (BeginDeferredCachedUpdates).
+        static thread_local VideoCommon::DeferredPageCaching deferred;
+        const bool defer = VideoCommon::t_deferred_page_caching == nullptr &&
+                           !VideoCommon::GpuSplit::OwnsScheduler();
+        bool gpu_modified;
+        {
+            std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = &deferred;
             }
+            gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            if (!gpu_modified) {
+                const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
+                DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
+                for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
+                    if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
+                        buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
+                        break;
+                    }
+                }
+            }
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = nullptr;
+                if (!deferred.Empty()) {
+                    device_memory.BeginDeferredCachedUpdates();
+                }
+            }
+        }
+        if (defer && !deferred.Empty()) {
+            deferred.ApplyAll();
+            device_memory.EndDeferredCachedUpdates();
+        }
+        if (gpu_modified) {
+            return true;
         }
     }
     if (texture_cache.page_filter.Any(addr, size)) {
