@@ -369,7 +369,8 @@ bool Maxwell3D::IsFastDrawParameter(u32 method) {
         return true;
     default:
         return DrawManager::IsInstanceLoopMethod(method) || IsFastDrawDeltaMethod(method) ||
-               IsFastDrawVertexBuffer(method) || IsFastDrawQueryMethod(method);
+               IsFastDrawVertexBuffer(method) || IsFastDrawVertexFormat(method) ||
+               IsFastDrawQueryMethod(method);
     }
 }
 
@@ -379,6 +380,14 @@ bool Maxwell3D::IsFastDrawQueryMethod(u32 method) {
     // CounterEnable), and a resolve that leaves the render pass ends the delta chain there.
     return method == MAXWELL3D_REG_INDEX(clear_report_value) ||
            method == MAXWELL3D_REG_INDEX(render_enable.mode);
+}
+
+bool Maxwell3D::IsFastDrawVertexFormat(u32 method) {
+    // With dynamic vertex input only each attribute's type class is in the pipeline key, which
+    // the reusable draw compares (TakeReusableDraw); the rest is recorded for every draw.
+    constexpr u32 formats = MAXWELL3D_REG_INDEX(vertex_attrib_format);
+    return VideoCommon::Nx2FastDraw::g_dynamic_vertex_input.load(std::memory_order_relaxed) &&
+           method >= formats && method < formats + Regs::NumVertexAttributes;
 }
 
 bool Maxwell3D::IsFastDrawVertexBuffer(u32 method) {
