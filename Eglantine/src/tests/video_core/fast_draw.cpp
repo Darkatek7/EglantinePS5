@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <thread>
 #include <functional>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
@@ -798,4 +799,29 @@ TEST_CASE("Query reset reuse does not exempt surface clears or render enable met
         breaks(MAXWELL3D_REG_INDEX(render_enable.mode), static_cast<u32>(Enable::Mode::True));
         breaks(MAXWELL3D_REG_INDEX(render_enable.mode), static_cast<u32>(Enable::Mode::True));
     }
+}
+
+TEST_CASE("Fast draw breaks skip the add only on the drawing thread, after its first since a read",
+          "[fast_draw]") {
+    FastDraw::SetEnabledForTest(true);
+    const auto current = [] { return FastDraw::g_serial.load(std::memory_order_relaxed); };
+    const u64 read = FastDraw::Serial();
+    FastDraw::Break(FastDraw::Reason::Register, 1);
+    CHECK(current() == read + 1);
+    // More breaks before the next read change nothing a draw compares.
+    FastDraw::Break(FastDraw::Reason::Register, 2);
+    FastDraw::Break(FastDraw::Reason::Method, 3);
+    CHECK(current() == read + 1);
+    // A thread that never reads the serial bumps every time.
+    std::thread other{[] {
+        FastDraw::Break(FastDraw::Reason::Invalidation);
+        FastDraw::Break(FastDraw::Reason::Invalidation);
+    }};
+    other.join();
+    CHECK(current() == read + 3);
+    // After a read, the drawing thread's next break bumps again.
+    const u64 again = FastDraw::Serial();
+    CHECK(again == read + 3);
+    FastDraw::Break(FastDraw::Reason::Register, 4);
+    CHECK(current() == again + 1);
 }
