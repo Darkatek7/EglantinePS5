@@ -102,6 +102,15 @@ struct GpuSplitTestAccess {
         return split.WritesTarget(memory, address, size);
     }
 
+    /// The ring word at `position`.
+    static u64 Word(const GpuSplit& split, u64 position) {
+        return split.ring[position & GpuSplit::RingMask];
+    }
+
+    static u64 StateKind() {
+        return static_cast<u64>(GpuSplit::Kind::State);
+    }
+
     /// Whether writes to two device addresses share a slot of the noted write positions.
     static bool ShareWriteSlot(DAddr a, DAddr b) {
         return GpuSplit::WriteSlot(a >> GpuSplit::WriteGranuleBits) ==
