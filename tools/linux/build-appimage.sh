@@ -48,6 +48,18 @@ export QMAKE=${QMAKE:-/usr/bin/qmake6}
 export EXTRA_PLATFORM_PLUGINS='libqwayland-egl.so;libqwayland-generic.so'
 export OUTPUT="$root/dist/EglantinePS5-Linux-x86_64.AppImage"
 export LDAI_OUTPUT="$OUTPUT"
+# linuxdeploy can retain an executable already present in its AppDir. Always
+# recreate this managed staging tree so incremental builds package the new ELF.
+python3 - "$work/AppDir" <<'PY'
+from pathlib import Path
+import shutil, sys
+appdir = Path(sys.argv[1])
+assert appdir.name == 'AppDir' and appdir.parent.name == 'linux' and appdir.parent.parent.name == 'build'
+if appdir.is_symlink():
+    appdir.unlink()
+elif appdir.exists():
+    shutil.rmtree(appdir)
+PY
 mkdir -p "$work/AppDir/usr/bin"
 cp "$work/cmake/bin/nx2_switches.txt" "$work/AppDir/usr/bin/"
 "$work/tools/linuxdeploy-x86_64.AppImage" --appdir "$work/AppDir" \
@@ -56,10 +68,24 @@ cp "$work/cmake/bin/nx2_switches.txt" "$work/AppDir/usr/bin/"
     --icon-file "$work/package/io.github.zortos293.lichii.png" --plugin qt --output appimage
 tar -C "$work/symbols" -czf "$root/dist/EglantinePS5-Linux-x86_64.debug.tar.gz" .
 python3 - "$root" <<'PY'
-import json,pathlib,subprocess,sys
+import json,pathlib,re,subprocess,sys
 r=pathlib.Path(sys.argv[1]); src=r/'build/linux/source'
+def build_id(path):
+    notes=subprocess.check_output(['readelf','-n',str(path)],text=True,env={'LC_ALL':'C','PATH':'/usr/bin:/bin'})
+    match=re.search(r'Build ID:\s+([0-9a-f]+)',notes)
+    if not match:
+        raise RuntimeError(f'No ELF build ID in {path}')
+    return match[1]
+identities={}
+for exe in ('lichii','eden-cli'):
+    compiled=build_id(r/'build/linux/cmake/bin'/exe)
+    deployed=build_id(r/'build/linux/AppDir/usr/bin'/exe)
+    if compiled != deployed:
+        raise RuntimeError(f'Packaged {exe} does not match the compiled ELF')
+    identities[exe]=compiled
 receipt={'port_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
          'source_stamp':(src/'.unpacked-from').read_text().strip(),
+         'elf_build_ids':identities,
          'build_type':'RelWithDebInfo', 'frontend':'Linux Qt/SDL, not the PS5 frontend'}
 (r/'dist/EglantinePS5-Linux-build.json').write_text(json.dumps(receipt,indent=2)+'\n')
 PY
