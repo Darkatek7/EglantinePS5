@@ -6,6 +6,7 @@
 #include <malloc.h>
 
 #include "headless/hud.h"
+#include "src/fastmem.h"
 
 extern "C" std::size_t eden_heap_committed() {
     const auto usage = mallinfo2();
@@ -16,6 +17,14 @@ extern "C" bool eden_vulkan_handoff_enabled() {
     // ordered_read_trace.inc defaults this optional notify-one experiment to false.
     return false;
 }
+
+namespace Eden::Fastmem {
+std::uint64_t Window64Base() noexcept {
+    // The desktop uses HostMemory's POSIX arena, without the PS5 window's
+    // 16 KiB alignment restrictions or stack relocation workaround.
+    return 0;
+}
+} // namespace Eden::Fastmem
 
 namespace Eden::Performance {
 void ReportHeap(const char* why) {
