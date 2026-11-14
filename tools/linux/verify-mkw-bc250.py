@@ -8,6 +8,7 @@ import pathlib
 import re
 import resource
 import subprocess
+import sys
 import time
 
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -22,6 +23,18 @@ if args.seconds < 30:
     parser.error("--seconds must be at least 30")
 b = pathlib.Path(__file__).resolve().parent
 o = args.out.expanduser().resolve()
+if os.environ.get("BC250_RELAY_HELD") != "1":
+    os.execvpe(
+        "bash",
+        [
+            "bash",
+            str(b / "bc250-relay.sh"),
+            sys.executable,
+            str(pathlib.Path(__file__).resolve()),
+            *sys.argv[1:],
+        ],
+        os.environ,
+    )
 o.mkdir(parents=True, exist_ok=False)
 launcher = b / "launch-mkw-bc250.sh"
 

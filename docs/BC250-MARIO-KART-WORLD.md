@@ -50,6 +50,23 @@ mesh-shader draws; this is not a claim of complete graphical accuracy.
 
 ## Repeat a bounded capture
 
+When the BC250 is shared, the verifier acquires
+`~/.cache/eglantineps5-bc250/board.lock` before creating its output directory or
+starting the game timeout. Other capture and direct-launch entrypoints must use
+the same relay helper, for example:
+
+```sh
+bash tools/linux/bc250-relay.sh \
+  bash ~/eglantine-debug/capture-bc250.sh appimage '/path/to/another-game.nup'
+```
+
+Place the relay outside the timeout so a queued capture gets its full test
+window. The active game finishes normally; the next test then takes the board.
+Nested launchers inherit `BC250_RELAY_HELD=1` to avoid a second acquisition. A
+standalone AppImage invocation can bypass this advisory lock, so exclude any
+period with another emulator from performance comparisons. Do not stop another
+agent's game to reclaim a turn.
+
 The helper targets the Bazzite gaming-mode session: X11 `:0` for Gamescope control,
 `:1` for the game, and Wayland `gamescope-0`. It temporarily selects the emulator
 window and restores the previous Gamescope selection afterward. Run it as the
