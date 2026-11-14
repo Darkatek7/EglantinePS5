@@ -241,8 +241,15 @@ def main(argv=None):
     (output / "run.json").write_text(json.dumps(result, indent=2) + "\n")
     if error:
         print(error, file=sys.stderr)
-    # A normal bounded run records timeout status 124 in run.json, as before.
-    return 1 if error else (code if interrupted_signal else 0)
+    # A configured timeout is expected, but crashes and other failures must
+    # reach the caller as well as the evidence receipt.
+    if error:
+        return 1
+    if code in (0, 124):
+        return 0
+    if code is None:
+        return 1
+    return 128 - code if code < 0 else code
 
 
 if __name__ == "__main__":

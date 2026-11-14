@@ -17,7 +17,7 @@ Requirements: Linux x86_64, CMake >=3.31, Clang, Ninja, Python >=3.11, rsync, cu
 binutils, and Qt 6 development packages. On Debian 13:
   sudo apt-get install clang cmake ninja-build python3 rsync curl binutils git \
     autoconf automake libtool nasm pkg-config glslang-tools \
-    qt6-base-dev qt6-base-private-dev qt6-charts-dev qt6-tools-dev qt6-wayland \
+    qt6-base-dev qt6-base-private-dev qt6-charts-dev qt6-tools-dev qt6-wayland qt6-svg-plugins \
     libglu1-mesa-dev libpulse-dev libudev-dev libasound2-dev libxkbcommon-dev \
     libxkbcommon-x11-0 libavfilter-dev libavcodec-dev libswscale-dev \
     libva-dev libvdpau-dev libusb-1.0-0-dev libboost-fiber-dev libopus-dev \
@@ -37,7 +37,8 @@ the repository commit and exact source-tree stamp, including local edits.
 The linuxdeploy tools are downloaded and checksum checked. Their continuous-release
 URLs may change: a checksum failure requires reviewing the new release and updating
 the pins. Automatic emulator updates are disabled for these development builds.
-The build also runs the real-wrapper 64-bit wait ABI check and existing NUP fixtures.
+The build also runs the real-wrapper 64-bit wait ABI check and checks the existing
+synthetic SPEC-numbered NUP fixture against the current parser and loader APIs.
 To confirm the ABI check catches the original AArch64 truncation:
   python3 tools/linux/checks/wait64_abi_check.py build/linux/source --negative-control
 

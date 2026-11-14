@@ -143,6 +143,23 @@ class RestoreFocus(unittest.TestCase):
             self.assertEqual(properties.values[':1', 'STEAM_GAME'], (777,))
 
 class CaptureInterruption(unittest.TestCase):
+    def test_unexpected_capture_exit_reaches_caller_and_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game = root / 'game.nup'
+            game.write_bytes(b'not executed')
+            script = root / 'capture-bc250.sh'
+            script.write_text('#!/usr/bin/env bash\nexit 139\n')
+            script.chmod(0o755)
+            with patch.object(run, '__file__', str(root/'zelda-run.py')), \
+                    patch.dict(os.environ, {'EDEN_LINUX_APP_DIR': str(root/'app')}):
+                status = run.main(['crashed', '--game', str(game), '--seconds', '10'])
+            self.assertEqual(status, 139)
+            receipt = json.loads((root/'evidence/crashed/run.json').read_text())
+            self.assertEqual(receipt['exit_status'], 139)
+            self.assertIsNone(receipt['interrupted_signal'])
+            self.assertIsNone(receipt['error'])
+
     def test_sigterm_stops_private_game_group_and_writes_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
