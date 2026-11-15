@@ -9,8 +9,10 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -24,10 +26,14 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/memory.h"
 #include "tests/core/system_test_context.h"
+#include "shader_recompiler/storage_write_extent.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/compute_write_grid.h"
+#include "video_core/buffer_cache/indirect_buffer.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_owed_words.h"
 #include "video_core/renderer_null/null_rasterizer.h"
 
 namespace {
@@ -258,6 +264,77 @@ struct KeepPolicy : Policy {
 
 using KeepCache = VideoCommon::BufferCache<KeepPolicy>;
 
+struct OwedBuffer : Buffer {
+    using Buffer::Buffer;
+    Buffer* Handle() {
+        return this;
+    }
+};
+
+/// Owed GPU-written list words (Nx2ListIndirect) as BufferCacheRuntime keeps them, each with the
+/// word its slot holds on the host GPU.
+struct OwedRuntime : Runtime {
+    using Word = Tegra::Nx2ListIndirect::OwedWords::Word;
+    using OwedReader = Tegra::Nx2ListIndirect::OwedReader;
+
+    void Owe(DAddr address, u32 placeholder, u32 real) {
+        owed.Note(address, placeholder, 1);
+        reals[address] = real;
+    }
+    bool Nx2Owes(DAddr address, u64 size) const {
+        return owed.Overlaps(address, size);
+    }
+    void Nx2ForgetOwed(DAddr address, u64 size) {
+        std::vector<Word> taken;
+        owed.Take(address, size, taken);
+    }
+    std::optional<std::pair<DAddr, DAddr>> Nx2OwedSpan(DAddr address, u64 size) const {
+        return owed.Span(address, size);
+    }
+    template <typename Read>
+    bool Nx2PatchOwed(DAddr address, u32 size, Buffer* dst, u64 offset, Read&& read, OwedReader) {
+        bool patched = false;
+        std::vector<Word> dropped;
+        owed.ForEach(
+            address, size,
+            [&](const Word& word) {
+                if (read(word.address) != word.value) {
+                    return false;
+                }
+                const DAddr first = (std::max)(word.address, address);
+                const DAddr last = (std::min)(word.address + 4, address + size);
+                if (first < last) {
+                    const u32 real = reals.at(word.address);
+                    std::memcpy(dst->bytes.data() + offset + (first - address),
+                                reinterpret_cast<const u8*>(&real) + (first - word.address),
+                                last - first);
+                    patched = true;
+                }
+                return true;
+            },
+            dropped);
+        return patched;
+    }
+    template <typename Land>
+    void Nx2LandOwed(DAddr address, u64 size, OwedReader, Land&& land) {
+        std::vector<Word> taken;
+        owed.Take(address, size, taken);
+        for (const Word& word : taken) {
+            REQUIRE(land(word.address, word.value, reals.at(word.address)));
+        }
+    }
+
+    Tegra::Nx2ListIndirect::OwedWords owed;
+    std::map<DAddr, u32> reals;
+};
+
+struct OwedPolicy : Policy {
+    using Runtime = ::OwedRuntime;
+    using Buffer = ::OwedBuffer;
+};
+
+using OwedCache = VideoCommon::BufferCache<OwedPolicy>;
+
 } // namespace
 
 namespace VideoCommon {
@@ -313,7 +390,8 @@ struct BufferCacheTestAccess {
         entry.draw_written = true;
         ++entry.writes;
     }
-    static void Download(Cache& cache, std::span<const std::pair<DAddr, u64>> ranges) {
+    template <class C>
+    static void Download(C& cache, std::span<const std::pair<DAddr, u64>> ranges) {
         cache.DownloadRangesMemory(ranges);
     }
     /// A draw or dispatch binds [address, address + size) of buffer `id`: its CPU-modified bytes
@@ -382,7 +460,8 @@ struct BufferCacheTestAccess {
     static void GpuWrite(KeepCache& cache, BufferId id, DAddr address, u32 size) {
         cache.MarkWrittenBuffer(id, address, size);
     }
-    static void MarkWritten(Cache& cache, BufferId id, DAddr address, u32 size) {
+    template <class C>
+    static void MarkWritten(C& cache, BufferId id, DAddr address, u32 size) {
         cache.MarkWrittenBuffer(id, address, size);
     }
     static size_t ReadDownloads(Cache& cache) {
