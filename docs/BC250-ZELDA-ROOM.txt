@@ -3,9 +3,11 @@ BC250 Zelda room investigation — 2026-11-15
 Status
 Zelda reaches Link's playable room, with movement and camera controls, on the
 Linux AppImage work in PR #107. The demanding door-facing view remains below
-the requested 30 FPS minimum. The vertex-ID experiment has no reliable gain
-established by the repeated measurements below. The subsequent query-reset
-candidate builds and installs but has not been launched on the board.
+the requested 30 guest FPS minimum. The vertex-ID experiment has no reliable
+gain established by the repeated measurements below. The subsequent
+query-reset candidate has now run on the board after rebase, including the
+frame-generation comparison below; exact Vulkan query-result parity remains
+unverified.
 
 This branch adds two experimental draw-reuse qualifications over PR #107:
 - 3167500739d836b56811cb20b720c618dca1508c: vertex_id_base writes retain the
@@ -86,8 +88,10 @@ eglantine-tree-804dd67dbd5e01d4eb8c570e23f0cab41fe27077, GUI ELF build ID
 03d7980dc01ffdd8ab789acf1baa25950c495ebb, CLI ELF build ID
 98290e45e852e523af5f0b6b9383f38d93229120. Build, synthetic NUP check and isolated
 installation succeeded; an independent matching profile is staged. This
-artifact predates the findings-only commit. No game execution, hardware
-verifier result or FPS result exists for a7d17b2 yet.
+artifact predates the findings-only commit. At the original findings snapshot
+it had not been launched. The later rebased build runs the identical emulator
+source in the frame-generation tests below; no additional hardware binding
+verifier or exact query-result parity qualification is claimed.
 
 Remaining rendering defect
 Purple/lavender forest soil is reproducible in the fresh opening on earlier
@@ -110,3 +114,66 @@ existing LOD0 and uneven-mip RGBA8 switches offer isolated diagnostics; neither
 has been tested here, and the latter can increase memory use substantially.
 The 30 FPS goal and rendering investigation remain open. No PS5 execution of
 these two candidates is claimed.
+
+Rebase and frame-generation test — later on 2026-11-15
+Rebased the three investigation commits onto main
+74372f7909b2a4774a6dd6a095f4090e7775d175. The replayed head is
+bc18aaba30b82d56ab6d4180c502128706f73d5f; all three patches compare identical
+with git range-diff. The emulator tree remains
+804dd67dbd5e01d4eb8c570e23f0cab41fe27077, including the exact production and
+test sources exercised by the earlier CPU suite. A fresh AppImage built and
+installed successfully: GUI ELF 75c80355014d37997d5bb2792b5c086c6214aac4,
+CLI ELF f738851189726bf4408eda5b588f00ed72ff4a88.
+
+Compared FG off and Optical Flow 2x (Fsr3 enum 1), multiplier 2, target rate 0,
+using that same executable, checkpoint, matched room view and image settings.
+Both global and per-game settings were explicit, with their default/inherit
+flags accounted for. The Gamescope virtual output reports 2560x1440 at 59.91 Hz;
+internal rendering remains 1x. This is one sequential off/on pair.
+
+Mode/window                Guest FPS    Host Vulkan presents/s
+FG off / counter              28.1706          28.1754
+FG on  / counter              28.1385          55.3303
+FG off / separate frame times  28.2742          28.2718
+FG on  / separate frame times  28.1374          54.7804
+
+The counter windows are about 61 s; the following frame-time queries are
+separate 60 s windows. The lowest ~1 s guest counter intervals were 24.4819
+off and 25.5207 on. The earlier 250 s startup plus 30 s settling protocol was
+retained. All samples identify the same active, unpaused Vulkan game build,
+with no rejected shaders or competing emulators observed.
+
+MangoHud 0.8.4 was explicitly configured with log_interval=0. Bounded CSV-tail
+reads bracket each guest timing window, recording both clocks and file
+identity. After measurement, fully interior records are selected with a
+0.2 s margin at each edge. Host throughput is (rows - 1) divided by elapsed
+span, not an average of instantaneous CSV FPS. Elapsed is nanoseconds since
+logging began. All actual CSV timestamps, selected row counts and rates were
+independently checked; file ages at boundaries were 10-37 ms. No recording,
+screenshots, controls or diagnostic flags ran inside the timing windows.
+MangoHud source references for the metric:
+https://github.com/flightlessmango/MangoHud/blob/v0.8.4/src/logging.cpp
+https://github.com/flightlessmango/MangoHud/blob/v0.8.4/src/overlay.cpp
+https://github.com/flightlessmango/MangoHud/blob/v0.8.4/src/vulkan.cpp
+
+Activation is supported by the effective settings, increased presentation
+rate, and the runtime message emitted after generation gates:
+  [EglantinePS5] framegen: generating 1 extra frame(s) per guest frame
+The attempted F11 photos did not expose the Qt generated-rate status bar, so
+no live Qt-counter screenshot is claimed. Host throughput rose 96.38% in the
+counter window and 93.76% in the separate frame-time window. Guest-rate
+differences were under 0.5%; one pair does not establish a significant change.
+Host presents include generated frames and do not verify physical scanout,
+interpolation quality, input latency, or a 30 guest FPS minimum.
+
+A post-measurement movement/camera smoke test and 12 s recording completed.
+The room remained visible and controls responded. Recording overhead affected
+the clip's overlay rate; it is excluded from the FPS evidence. No device-loss
+or device-fault message appeared. The four known nonfatal Critical messages
+(two SDL audio-device failures, service commands 903 and 10500) remain;
+audio and complete service behavior are not qualified. Both private test
+processes exited with focus restored. The isolated ZeldaFG profile retains
+FG enabled. The opening color defect and exact query-result checks remain open.
+
+BC250-ZELDA-FRAMEGEN.json records the sanitized numerical comparison and
+artifact identities. The companion data-only chart is under docs/evidence/.
