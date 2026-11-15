@@ -152,7 +152,7 @@ with (o / "session.txt").open("w") as log:
                 focus = subprocess.Popen(
                     [
                         "python3",
-                        str(b / "focus-game.py"),
+                        str(b / "focus-mkw-bc250.py"),
                         pids[0],
                         q.stdout.splitlines()[0],
                         str(o),

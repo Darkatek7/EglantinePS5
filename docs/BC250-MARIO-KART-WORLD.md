@@ -67,6 +67,10 @@ standalone AppImage invocation can bypass this advisory lock, so exclude any
 period with another emulator from performance comparisons. Do not stop another
 agent's game to reclaim a turn.
 
+The verifier uses `focus-mkw-bc250.py`, whose third argument is the capture output
+directory. The general Linux `focus-game.py` helper instead accepts an evidence
+tag; its existing callers retain that interface.
+
 The helper targets the Bazzite gaming-mode session: X11 `:0` for Gamescope control,
 `:1` for the game, and Wayland `gamescope-0`. It temporarily selects the emulator
 window and restores the previous Gamescope selection afterward. Run it as the
