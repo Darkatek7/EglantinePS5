@@ -166,6 +166,18 @@ constexpr std::size_t DecoderCharge = 256 * 1024;
 /// Partly decoded spilled members that keep their decoder, and with it a window of up to
 /// 128 MiB; another one restarts from its first frame when read past its prefix again.
 constexpr std::size_t MaxSpillDecoders = 2;
+/// Members from this size on are kept decoded in the cache directory, named after their SHA-256,
+/// and read from there by later launches instead of being decoded again.
+constexpr u64 PersistMinBytes = 4 * 1024 * 1024;
+
+std::string Hex(const std::array<u8, 0x20>& bytes) {
+    std::string text;
+    text.reserve(bytes.size() * 2);
+    for (const u8 byte : bytes) {
+        text += fmt::format("{:02x}", byte);
+    }
+    return text;
+}
 
 } // namespace
 
@@ -197,10 +209,13 @@ struct NupMember {
     // A member up to half the cache cap, decoded in place.
     std::unique_ptr<u8[]> data;
 
-    // A larger member, decoded into a temporary file.
+    // A larger member, decoded into a temporary file (`path`, removed with the member) that
+    // becomes the kept copy once complete (`path` empty then).
     std::mutex file_mutex;
     std::filesystem::path path;
     Common::FS::IOFile file;
+    // SHA-256 of the spilled output so far, from its first byte.
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> hash{nullptr, &EVP_MD_CTX_free};
 };
 
 /// Members of one container, shared by all files opened from it. In-memory members are charged
@@ -297,10 +312,11 @@ class NupVfsFile final : public VfsFile {
 public:
     NupVfsFile(VirtualFile backing_, u64 extent_offset_, u64 extent_size_, u64 uncompressed_size_,
                std::string name_, std::shared_ptr<NupDecompressCache> cache_,
-               std::size_t cache_index_)
+               std::size_t cache_index_, const std::array<u8, 0x20>& sha256_)
         : backing(std::move(backing_)), extent_offset(extent_offset_), extent_size(extent_size_),
           uncompressed_size(uncompressed_size_), name(std::move(name_)), cache(std::move(cache_)),
-          cache_index(cache_index_), spilled(cache->Spills(uncompressed_size)) {}
+          cache_index(cache_index_), spilled(cache->Spills(uncompressed_size)), sha256(sha256_),
+          persist(sha256_ != std::array<u8, 0x20>{} && uncompressed_size_ >= PersistMinBytes) {}
 
     std::string GetName() const override {
         return name;
@@ -412,11 +428,18 @@ private:
                     extent_offset > backing->GetSize() - extent_size) {
                     return fail("extent out of range");
                 }
+                if (persist && LoadKept(member)) {
+                    finish();
+                    return true;
+                }
                 if (spilled) {
                     std::random_device random;
                     std::error_code ec;
                     std::filesystem::create_directories(cache->spill_dir, ec);
-                    member.path = cache->spill_dir / fmt::format("{:08x}{:08x}-{}.tmp", random(),
+                    member.path =
+                        persist ? cache->spill_dir / fmt::format("{}.{:08x}{:08x}.part", Hex(sha256),
+                                                                 random(), random())
+                                : cache->spill_dir / fmt::format("{:08x}{:08x}-{}.tmp", random(),
                                                                  random(), cache_index);
                     member.file.Open(member.path, Common::FS::FileAccessMode::Write);
                     member.file.Close();
@@ -438,6 +461,14 @@ private:
             member.consumed = 0;
             member.produced = 0;
             if (spilled) {
+                member.hash.reset();
+                if (persist) {
+                    member.hash.reset(EVP_MD_CTX_new());
+                    if (member.hash &&
+                        EVP_DigestInit_ex(member.hash.get(), EVP_sha256(), nullptr) != 1) {
+                        member.hash.reset();
+                    }
+                }
                 cache->AddSpillDecoder(member);
             } else {
                 // Decoding straight into the member skips zstd's window buffer and its copy.
@@ -473,6 +504,11 @@ private:
             if (produced > uncompressed_size - member.produced) {
                 return fail("more data than the file size");
             }
+            if (spilled && member.hash && produced != 0 &&
+                EVP_DigestUpdate(member.hash.get(), output.data() + out_before,
+                                 static_cast<std::size_t>(produced)) != 1) {
+                member.hash.reset();
+            }
             const u64 from = std::max(member.produced, decoded);
             if (spilled && member.produced + produced > from) {
                 const auto count = static_cast<std::size_t>(member.produced + produced - from);
@@ -503,9 +539,104 @@ private:
         if (member.produced != uncompressed_size || member.last_result != 0) {
             return fail("the data does not end at the file size");
         }
+        if (persist) {
+            Keep(member);
+        }
         member.decoded.store(uncompressed_size, std::memory_order_release);
         finish();
         return true;
+    }
+
+    std::filesystem::path KeptPath() const {
+        return cache->spill_dir / (Hex(sha256) + ".bin");
+    }
+
+    /// Serves the member from the copy an earlier launch kept, if there is one of its size. The
+    /// caller owns the member's decoder and has not started it.
+    bool LoadKept(NupMember& member) const {
+        const auto kept = KeptPath();
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(kept, ec);
+        if (ec || size != uncompressed_size) {
+            return false;
+        }
+        if (spilled) {
+            std::scoped_lock file_lock{member.file_mutex};
+            member.file.Open(kept, Common::FS::FileAccessMode::Read);
+            if (!member.file.IsOpen()) {
+                return false;
+            }
+        } else {
+            Common::FS::IOFile file{kept, Common::FS::FileAccessMode::Read};
+            if (!file.IsOpen()) {
+                return false;
+            }
+            member.data =
+                std::make_unique_for_overwrite<u8[]>(static_cast<std::size_t>(uncompressed_size));
+            if (file.ReadSpan(std::span{member.data.get(),
+                                        static_cast<std::size_t>(uncompressed_size)}) !=
+                uncompressed_size) {
+                member.data.reset();
+                return false;
+            }
+        }
+        member.decoded.store(uncompressed_size, std::memory_order_release);
+        return true;
+    }
+
+    /// Keeps the completely decoded member for later launches when its SHA-256 matches the
+    /// record: a spilled member's part file is renamed, an in-memory one written out. Best effort;
+    /// the caller owns the member's decoder.
+    void Keep(NupMember& member) const {
+        std::array<u8, 0x20> digest{};
+        bool hashed = false;
+        if (spilled) {
+            unsigned int length = 0;
+            hashed = member.hash &&
+                     EVP_DigestFinal_ex(member.hash.get(), digest.data(), &length) == 1 &&
+                     length == digest.size();
+            member.hash.reset();
+        } else {
+            hashed = Sha256(member.data.get(), static_cast<std::size_t>(uncompressed_size), digest);
+        }
+        if (!hashed || digest != sha256) {
+            LOG_WARNING(Loader, "NUP member {} does not match its recorded SHA-256; not kept",
+                        name);
+            return;
+        }
+        const auto kept = KeptPath();
+        std::error_code ec;
+        if (spilled) {
+            std::scoped_lock file_lock{member.file_mutex};
+            member.file.Close();
+            std::filesystem::rename(member.path, kept, ec);
+            if (!ec) {
+                member.path.clear();
+                member.file.Open(kept, Common::FS::FileAccessMode::Read);
+            } else {
+                member.file.Open(member.path, Common::FS::FileAccessMode::ReadWrite);
+            }
+            return;
+        }
+        std::random_device random;
+        const auto part =
+            cache->spill_dir /
+            fmt::format("{}.{:08x}{:08x}.part", Hex(sha256), random(), random());
+        std::filesystem::create_directories(cache->spill_dir, ec);
+        bool written = false;
+        {
+            Common::FS::IOFile file{part, Common::FS::FileAccessMode::Write};
+            written = file.IsOpen() &&
+                      file.WriteSpan(std::span<const u8>{
+                          member.data.get(), static_cast<std::size_t>(uncompressed_size)}) ==
+                          uncompressed_size;
+        }
+        if (written) {
+            std::filesystem::rename(part, kept, ec);
+        }
+        if (!written || ec) {
+            std::filesystem::remove(part, ec);
+        }
     }
 
     VirtualFile backing;
@@ -516,6 +647,9 @@ private:
     std::shared_ptr<NupDecompressCache> cache;
     std::size_t cache_index;
     bool spilled;
+    std::array<u8, 0x20> sha256;
+    // Large enough to keep decoded, with a recorded SHA-256 to name and check the copy by.
+    bool persist;
 };
 
 } // namespace
@@ -889,7 +1023,7 @@ VirtualFile NupContainer::OpenFileAs(std::size_t file_index, const std::string& 
             static_cast<std::size_t>(node.extent_offset), name);
     }
     return std::make_shared<NupVfsFile>(file, node.extent_offset, node.extent_size, node.size,
-                                        name, cache, file_index);
+                                        name, cache, file_index, node.sha256);
 }
 
 std::optional<bool> NupContainer::HasZstdMagic(std::size_t file_index) const {
@@ -1114,8 +1248,9 @@ Loader::ResultStatus NupContainer::VerifyIntegrity(
         } else if (node.codec == CodecRaw) {
             content = ReadExtentRaw(node);
         } else {
+            // Decoded from the container itself (no hash: a kept copy is not what is checked).
             NupVfsFile view(file, node.extent_offset, node.extent_size, node.size, node.name,
-                            cache, i);
+                            cache, i, {});
             content = view.ReadAllBytes();
         }
         if (content.size() != node.size) {
