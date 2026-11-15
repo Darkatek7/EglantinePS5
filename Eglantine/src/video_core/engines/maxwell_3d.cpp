@@ -393,6 +393,8 @@ bool Maxwell3D::IsFastDrawDeltaMethod(u32 method) {
         return true;
     }
     switch (method) {
+    // Counter resets still execute; draw preparation does not consume their state.
+    case MAXWELL3D_REG_INDEX(clear_report_value):
     case MAXWELL3D_REG_INDEX(bind_groups[0].raw_config):
     case MAXWELL3D_REG_INDEX(bind_groups[1].raw_config):
     case MAXWELL3D_REG_INDEX(bind_groups[2].raw_config):
