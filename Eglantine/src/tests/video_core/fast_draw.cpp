@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <functional>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "tests/core/system_test_context.h"
+#include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
+#include "video_core/macro.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_fast_draw.h"
 #include "video_core/rasterizer_interface.h"
@@ -33,8 +36,14 @@ public:
 class SerialRasterizer final : public VideoCore::RasterizerInterface {
 public:
     std::vector<u64> draws;
+    std::function<void(bool, u32)> on_draw;
 
-    void Draw(bool, u32) override { draws.push_back(FastDraw::Serial()); }
+    void Draw(bool indexed, u32 instances) override {
+        draws.push_back(FastDraw::Serial());
+        if (on_draw) {
+            on_draw(indexed, instances);
+        }
+    }
     void DrawTexture() override {}
     void Clear(u32) override {}
     void DispatchCompute() override {}
@@ -343,6 +352,106 @@ TEST_CASE("Fast draw keeps base vertex and instance as draw parameters", "[fast_
             f.Reg(MAXWELL3D_REG_INDEX(global_base_instance_index)) + 1);
     f.DrawArrays(0, 3);
     CHECK(f.Reusable());
+}
+
+TEST_CASE("Fast draw retains vertex ID writes and shadow replay without changing indexed draw bases",
+          "[fast_draw][vertex_id_base]") {
+    constexpr u32 vertex_id = MAXWELL3D_REG_INDEX(vertex_id_base);
+    constexpr u32 shadow_control = MAXWELL3D_REG_INDEX(shadow_ram_control);
+    using Control = Maxwell3D::Regs::ShadowRamControl;
+    for (const bool fast : {false, true}) {
+        CAPTURE(fast);
+        FastDrawFixture f;
+        f.maxwell3d.fast_maxwell3d = fast;
+        Tegra::MacroInterpreterImpl macro;
+        // Observe both dirty-table writes even though this register has no renderer consumer.
+        f.maxwell3d.dirty.tables[0][vertex_id] = VideoCommon::Dirty::VertexBuffers;
+        f.maxwell3d.dirty.tables[1][vertex_id] = VideoCommon::Dirty::IndexBuffer;
+        u32 expected_base = 23;
+        u32 expected_vertex_id = 0;
+        f.rasterizer.on_draw = [&](bool indexed, u32 instances) {
+            CHECK(indexed);
+            CHECK(instances == 1);
+            CHECK(f.maxwell3d.draw_manager.draw_state.base_index == expected_base);
+            CHECK(macro.Read(f.maxwell3d, vertex_id) == expected_vertex_id);
+        };
+        const auto draw = [&] {
+            f.Write(MAXWELL3D_REG_INDEX(index_buffer.first), 0);
+            f.Write(MAXWELL3D_REG_INDEX(index_buffer.count), 3);
+            f.Write(MAXWELL3D_REG_INDEX(draw.begin), 4);
+            f.Write(MAXWELL3D_REG_INDEX(draw.end), 0);
+        };
+        const auto write_vertex_id = [&](u32 argument, u32 expected) {
+            f.maxwell3d.dirty.flags.reset();
+            const u64 serial = FastDraw::Serial();
+            f.Write(vertex_id, argument);
+            CHECK(FastDraw::Serial() == serial);
+            CHECK(f.Reg(vertex_id) == expected);
+            CHECK(macro.Read(f.maxwell3d, vertex_id) == expected);
+            CHECK(f.maxwell3d.dirty.flags[VideoCommon::Dirty::VertexBuffers]);
+            CHECK(f.maxwell3d.dirty.flags[VideoCommon::Dirty::IndexBuffer]);
+            expected_vertex_id = expected;
+        };
+
+        f.Write(shadow_control, static_cast<u32>(Control::Track));
+        f.Write(MAXWELL3D_REG_INDEX(global_base_vertex_index), expected_base);
+        draw();
+        write_vertex_id(11, 11);
+        CHECK(f.maxwell3d.shadow_state.vertex_id_base == 11);
+        draw();
+        CHECK(f.Reusable());
+
+        f.Write(shadow_control, static_cast<u32>(Control::Passthrough));
+        write_vertex_id(29, 29);
+        CHECK(f.maxwell3d.shadow_state.vertex_id_base == 11);
+        draw();
+        f.Write(shadow_control, static_cast<u32>(Control::Replay));
+        write_vertex_id(99, 11);
+        CHECK(f.maxwell3d.shadow_state.vertex_id_base == 11);
+        draw();
+
+        f.Write(shadow_control, static_cast<u32>(Control::Passthrough));
+        expected_base = 47;
+        f.Write(MAXWELL3D_REG_INDEX(global_base_vertex_index), expected_base);
+        write_vertex_id(73, 73);
+        draw();
+        REQUIRE(f.rasterizer.draws.size() == 5);
+    }
+}
+
+TEST_CASE("A vertex ID write flushes deferred instances before storing the new value",
+          "[fast_draw][vertex_id_base]") {
+    for (const bool fast : {false, true}) {
+        CAPTURE(fast);
+        FastDrawFixture f;
+        f.maxwell3d.fast_maxwell3d = fast;
+        f.Write(MAXWELL3D_REG_INDEX(vertex_id_base), 17);
+        f.Write(MAXWELL3D_REG_INDEX(global_base_vertex_index), 31);
+        f.rasterizer.on_draw = [&](bool indexed, u32 instances) {
+            CHECK(indexed);
+            CHECK(instances == (f.rasterizer.draws.size() == 1 ? 1 : 3));
+            CHECK(f.maxwell3d.regs.vertex_id_base == 17);
+            CHECK(f.maxwell3d.draw_manager.draw_state.base_index == 31);
+        };
+        const auto draw = [&](u32 begin) {
+            f.Write(MAXWELL3D_REG_INDEX(draw.begin), begin);
+            f.Write(MAXWELL3D_REG_INDEX(index_buffer.first), 0);
+            f.Write(MAXWELL3D_REG_INDEX(index_buffer.count), 3);
+            f.Write(MAXWELL3D_REG_INDEX(draw.end), 0);
+        };
+        draw(4);
+        draw(4 | (1U << 26));
+        draw(4 | (1U << 26));
+        REQUIRE(f.rasterizer.draws.size() == 1);
+        REQUIRE(f.maxwell3d.draw_manager.HasDeferredDraw());
+        const u64 serial = FastDraw::Serial();
+        f.Write(MAXWELL3D_REG_INDEX(vertex_id_base), 71);
+        REQUIRE(f.rasterizer.draws.size() == 2);
+        CHECK_FALSE(f.maxwell3d.draw_manager.HasDeferredDraw());
+        CHECK(f.maxwell3d.regs.vertex_id_base == 71);
+        CHECK(FastDraw::Serial() == serial);
+        CHECK(f.Reusable());
+    }
 }
 
 TEST_CASE("Fast draw keeps vertex stream addresses and sizes light", "[fast_draw]") {
