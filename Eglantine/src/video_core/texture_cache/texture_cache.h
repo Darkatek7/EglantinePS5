@@ -481,8 +481,10 @@ void TextureCache<P>::TickFrame() {
                             ? HostCriticalMemory(runtime.GetDeviceMemoryUsage(), *commit_room)
                             : (std::numeric_limits<u64>::max)();
                     critical_memory = (std::min)(critical_memory, host_critical);
-                    const u64 room_margin = (std::min)(pressure_margin + slack_margin, budget / 2);
-                    retention_limit = (std::min)(budget - room_margin, host_critical);
+                    retention_budget = RetentionBudget(retention_budget, budget);
+                    const u64 room_margin =
+                        (std::min)(pressure_margin + slack_margin, retention_budget / 2);
+                    retention_limit = (std::min)(retention_budget - room_margin, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
@@ -498,8 +500,10 @@ void TextureCache<P>::TickFrame() {
                         logged_critical_memory = critical_memory;
                         LogThresholds();
                         LOG_INFO(HW_GPU,
-                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
-                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20);
+                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB; "
+                                 "retention limit {} MiB (lowest budget lately {} MiB)",
+                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20,
+                                 retention_limit >> 20, retention_budget >> 20);
                         if (commit_room) {
                             LOG_INFO(HW_GPU, "Host memory: {} MiB of commit left, {}",
                                      *commit_room >> 20,
