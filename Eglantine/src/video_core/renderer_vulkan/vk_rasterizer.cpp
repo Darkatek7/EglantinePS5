@@ -2460,9 +2460,10 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
-    // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
-    // the longer DeferFlush interval (#161).
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+    // Batched like fences (DeferFlush): one submission per dispatch was ~6,000 a second in Hyrule
+    // Warriors: Age of Imprisonment fights. A front that waits on a copy whose tick isn't
+    // submitted yet has the back submit it between entries (IsGpuTickDone, WaitSubmittedTick).
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
         scheduler.Flush();
     }
 }
