@@ -2270,10 +2270,16 @@ void RasterizerVulkan::DispatchCompute() {
     const bool marking_effects = oot_effects_frame == render_trace_frame && OcarinaTemporalEnabled() &&
                                  !indirect_address && !frame_dump.Capturing();
     ComputePipeline::BindCommand deferred_bind;
-    if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
-                             texture_cache, texture_cache_runtime, byte_addressed_shadow,
-                             can_replace || marking_effects ? &deferred_bind : nullptr)) {
+    switch (pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
+                                texture_cache, texture_cache_runtime, pipeline_cache,
+                                byte_addressed_shadow,
+                                can_replace || marking_effects ? &deferred_bind : nullptr)) {
+    case ComputePipeline::ConfigureResult::Ready:
+        break;
+    case ComputePipeline::ConfigureResult::Failed:
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
+        return;
+    case ComputePipeline::ConfigureResult::Skipped:
         return;
     }
     SCOPE_EXIT {

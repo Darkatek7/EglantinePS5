@@ -714,6 +714,24 @@ void TextureCache<P>::MarkModification(ImageId id) noexcept {
 }
 
 template <class P>
+void TextureCache<P>::MarkStorageWrite(ImageViewId id) noexcept {
+    const ImageViewBase& view = slot_image_views[id];
+    if (!view.image_id) {
+        return;
+    }
+    ImageBase& image = slot_images[view.image_id];
+    const u32 levels_before = image.storage_written_levels;
+    MarkModification(image);
+    NoteStorageWrite(image, levels_before, view.range);
+}
+
+template <class P>
+bool TextureCache<P>::StorageViewHoldsShaderWrites(ImageViewId id) const noexcept {
+    const ImageViewBase& view = slot_image_views[id];
+    return !view.image_id || HoldsStorageWrites(slot_images[view.image_id], view.range);
+}
+
+template <class P>
 bool TextureCache<P>::PublishComputeCollisionImage(u32 index) {
     const auto view_id = VisitImageView(index, true);
     if (!view_id || !slot_image_views[view_id].image_id) {
@@ -1131,12 +1149,15 @@ template <class P>
 void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     using namespace VideoCommon::Dirty;
     struct ClearingScope {
-        bool& flag;
+        bool& clearing;
+        bool& drawing;
         ~ClearingScope() {
-            flag = false;
+            clearing = false;
+            drawing = false;
         }
-    } clearing_scope{clearing_render_targets};
+    } clearing_scope{clearing_render_targets, drawing_render_targets};
     clearing_render_targets = is_clear;
+    drawing_render_targets = !is_clear;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
         for (size_t index = 0; index < NUM_RT; ++index) {
@@ -1210,6 +1231,39 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
     last_framebuffer_id = framebuffer_id;
     last_framebuffer_serial = render_targets_serial;
     return &slot_framebuffers[framebuffer_id];
+}
+
+template <class P>
+bool TextureCache<P>::ColorTargetWrittenBeforeThisFrame(u32 index) noexcept {
+    if (!maxwell3d || index >= rt_image_id.size()) {
+        return false;
+    }
+    const auto& regs = maxwell3d->regs;
+    const auto& rt = regs.rt[index];
+    const GPUVAddr gpu_addr = rt.Address();
+    if (gpu_addr == 0 || rt.format == Tegra::RenderTargetFormat::NONE) {
+        return false;
+    }
+    std::scoped_lock lock{mutex};
+    ImageId image_id{};
+    if (!maxwell3d->dirty.flags[Dirty::RenderTargets] &&
+        !maxwell3d->dirty.flags[Dirty::ColorBuffer0 + index]) {
+        image_id = rt_image_id[index];
+    } else {
+        const ImageInfo info(rt, regs.anti_alias_samples_mode);
+        if (info.format == PixelFormat::Invalid || info.size.width == 0 || info.size.height == 0 ||
+            info.size.depth == 0 || info.size.width > 65536 || info.size.height > 65536 ||
+            info.size.depth > 2048 || info.resources.layers <= 0 ||
+            info.resources.layers > 2048) {
+            return false;
+        }
+        image_id = FindImage(info, gpu_addr, RelaxedOptions{});
+    }
+    if (!image_id) {
+        return false;
+    }
+    const ImageBase& image = slot_images[image_id];
+    return image.first_written_frame != 0 && image.first_written_frame < frame_tick + 1;
 }
 
 template <class P>
@@ -2199,6 +2253,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.storage_written_levels = 0;
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
@@ -4350,6 +4405,7 @@ void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
         ArmImageReadTraps(image);
     }
     image.flags |= ImageFlagBits::GpuModified;
+    image.storage_written_levels = 0;
     SetModificationTick(slot_images, image, ++modification_tick);
 }
 
@@ -4418,6 +4474,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     }
     SetModificationTick(slot_images, image, most_recent_tick);
     image.newest_alias_tick = most_recent_tick;
+    image.storage_written_levels = 0;
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
     }
@@ -4499,6 +4556,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
         }
         MarkModification(image);
+        if (drawing_render_targets && image.first_written_frame == 0) {
+            image.first_written_frame = frame_tick + 1;
+        }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }

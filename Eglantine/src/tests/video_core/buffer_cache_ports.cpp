@@ -327,6 +327,25 @@ struct BufferCacheTestAccess {
         channel.uniform_buffers[0][0] = {.device_addr = address, .size = size, .buffer_id = id};
         cache.BindHostGraphicsUniformBuffer(0, 0, 0, true);
     }
+    /// Engines (DMACopy) run on `channel`.
+    template <class C>
+    static void UseChannel(C& cache, BufferCacheChannelInfo& channel) {
+        cache.channel_state = &channel;
+        cache.maxwell3d = &channel.maxwell3d;
+        cache.gpu_memory = &channel.gpu_memory;
+    }
+    /// A dispatch binds `binding` as compute storage buffer `index`; a native one marks only
+    /// `write_mark` bytes of it written.
+    static void ComputeStorage(Cache& cache, BufferCacheChannelInfo& channel, u32 index,
+                               Binding binding, bool written, bool native = false,
+                               u32 write_mark = 0) {
+        UseChannel(cache, channel);
+        channel.enabled_compute_storage_buffers |= u64{1} << index;
+        channel.written_compute_storage_buffers |= u64{written ? 1U : 0U} << index;
+        channel.native_compute_storage_buffers |= u64{native ? 1U : 0U} << index;
+        channel.compute_storage_buffers[index] = binding;
+        channel.compute_storage_write_marks[index] = write_mark;
+    }
     static void NextFrame(Cache& cache) {
         cache.native_indirect_uniforms_this_frame.clear();
     }
@@ -1057,6 +1076,170 @@ TEST_CASE("Read downloads keep CPU writes made while they were on their way", "[
     REQUIRE(f.bytes[0x10210] == 0x12);
     REQUIRE(f.bytes[0x10fff] == 0x12);
     REQUIRE_FALSE(Access::Pending(*f.cache, 0x20000, 0x1000));
+}
+
+TEST_CASE("Indirect dispatch arguments remain GPU modified across a neighboring CPU upload",
+          "[buffer_ports]") {
+    Fixture f;
+    const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
+    auto &original = Access::Get(*f.cache, id);
+    std::fill_n(original.bytes.begin() + 0x40, 12, u8{0x73});
+    Access::Dirty(*f.cache, 0x10040, 12);
+    Access::UseGpuMemory(*f.cache, *f.memory);
+    const auto [arguments, offset] = VideoCommon::ObtainIndirectBuffer(*f.cache, 0x100040);
+    REQUIRE(Access::Pending(*f.cache, 0x10040, 12));
+    REQUIRE(arguments->bytes[offset] == 0x73);
+    // A CPU write elsewhere on this tracked page must not re-upload the stale argument bytes.
+    f.bytes[0x80] = 0x42;
+    Access::MarkCpuModified(*f.cache, 0x10000, 0x1000);
+    Access::Upload(*f.cache, id, 0x10000, 0x1000);
+    REQUIRE(arguments->bytes[offset] == 0x73);
+    REQUIRE(arguments->bytes[arguments->Offset(0x10080)] == 0x42);
+    f.cache->DownloadMemory(0x10040, 12);
+    REQUIRE(f.bytes[0x40] == 0x73);
+}
+
+TEST_CASE("A dispatch's outputs hold GPU data once the GPU wrote every range it writes",
+          "[video_core][buffer_ports]") {
+    Fixture f;
+    Tegra::Control::ChannelState state{0};
+    state.memory_manager = &*f.memory;
+    state.payload.emplace(f.system, *f.memory, state);
+    VideoCommon::BufferCacheChannelInfo channel{state};
+    const auto id = Access::Add(*f.cache, 0x10000, 0x10000);
+    const auto binding = [id](DAddr address, u32 size) {
+        return VideoCommon::Binding{.device_addr = address, .size = size, .buffer_id = id};
+    };
+    // What it only reads doesn't count.
+    Access::ComputeStorage(*f.cache, channel, 0, binding(0x10000, 0x100), false);
+    REQUIRE(f.cache->ComputeWritesHoldGpuData());
+    Access::ComputeStorage(*f.cache, channel, 1, binding(0x11000, 0x100), true);
+    REQUIRE_FALSE(f.cache->ComputeWritesHoldGpuData());
+    // Part of the range is not enough: the rest still holds what the guest left there.
+    Access::MarkWritten(*f.cache, id, 0x11000, 0x40);
+    REQUIRE_FALSE(f.cache->ComputeWritesHoldGpuData());
+    Access::MarkWritten(*f.cache, id, 0x11040, 0xc0);
+    REQUIRE(f.cache->ComputeWritesHoldGpuData());
+    // A native binding counts as far as the dispatch marks it written.
+    Access::ComputeStorage(*f.cache, channel, 2, binding(0x12000, 0x1000), true, true, 0x40);
+    REQUIRE_FALSE(f.cache->ComputeWritesHoldGpuData());
+    Access::MarkWritten(*f.cache, id, 0x12800, 0x100);
+    REQUIRE_FALSE(f.cache->ComputeWritesHoldGpuData());
+    Access::MarkWritten(*f.cache, id, 0x12000, 0x40);
+    REQUIRE(f.cache->ComputeWritesHoldGpuData());
+}
+
+namespace {
+struct GridDimension {
+    u32 value;
+    u32 Value() const {
+        return value;
+    }
+};
+struct GridEngine {
+    struct {
+        GridDimension grid_dim_x, grid_dim_y, grid_dim_z;
+    } launch_description;
+    bool indirect{};
+    bool slot{};
+    std::optional<GPUVAddr> GetIndirectComputeAddress() const {
+        return indirect ? std::optional<GPUVAddr>{0x1000} : std::nullopt;
+    }
+    std::optional<u32> GetIndirectListSlot() const {
+        return slot ? std::optional<u32>{1} : std::nullopt;
+    }
+};
+} // Anonymous namespace
+
+TEST_CASE("List-slot group counts cannot narrow GPU write tracking",
+          "[video_core][buffer_ports]") {
+    GridEngine engine{{{1}, {20}, {1}}, false, false};
+    const Shader::StorageWriteExtent extent{
+        .bounded = true, .const_end = 4, .group_stride = {0, 4, 0}};
+    const std::array<u32, 3> block{1, 1, 1};
+    auto grid = VideoCommon::ComputeWriteGrid(engine);
+    REQUIRE(grid.has_value());
+    REQUIRE((*grid)[1] == 20);
+    REQUIRE(Shader::ResolveStorageWriteExtent(extent, block, grid) == u64{80});
+    engine.indirect = true;
+    REQUIRE_FALSE(VideoCommon::ComputeWriteGrid(engine));
+    engine.indirect = false;
+    engine.slot = true;
+    // Slot 1's placeholders: y is 5 after the QMD's low 16 bits, while the real GPU-written y
+    // can be 20. Taking 5 as the grid would mark too little of this 80-byte output.
+    engine.launch_description = {{0xf1a90004}, {5}, {6}};
+    grid = VideoCommon::ComputeWriteGrid(engine);
+    REQUIRE_FALSE(grid);
+    REQUIRE_FALSE(Shader::ResolveStorageWriteExtent(extent, block, grid));
+    auto local_extent = extent;
+    local_extent.group_stride = {};
+    REQUIRE(Shader::ResolveStorageWriteExtent(local_extent, block, grid) == u64{4});
+}
+
+namespace {
+/// One buffer over device 0x10000-0x20000 (GPU 0x100000), on a channel for engines.
+struct OwedFixture : BasicFixture<OwedRuntime, OwedCache> {
+    OwedFixture() {
+        state.memory_manager = &*memory;
+        state.payload.emplace(system, *memory, state);
+        channel.emplace(state);
+        Access::UseChannel(*cache, *channel);
+        id = Access::Add(*cache, 0x10000, 0x10000);
+    }
+    /// An inline upload wrote `placeholder` at `address`, guest memory and buffer alike, and the
+    /// slot it names holds `real`.
+    void Owe(DAddr address, u32 placeholder, u32 real) {
+        std::memcpy(bytes + (address - 0x10000), &placeholder, sizeof(placeholder));
+        std::memcpy(Access::Get(*cache, id).bytes.data() + (address - 0x10000), &placeholder,
+                    sizeof(placeholder));
+        runtime.Owe(address, placeholder, real);
+    }
+    u32 Guest(DAddr address) const {
+        u32 word;
+        std::memcpy(&word, bytes + (address - 0x10000), sizeof(word));
+        return word;
+    }
+    u32 Host(DAddr address) {
+        u32 word;
+        std::memcpy(&word, Access::Get(*cache, id).bytes.data() + (address - 0x10000),
+                    sizeof(word));
+        return word;
+    }
+
+    Tegra::Control::ChannelState state{0};
+    std::optional<VideoCommon::BufferCacheChannelInfo> channel;
+    VideoCommon::BufferId id;
+};
+} // Anonymous namespace
+
+TEST_CASE("List words: a DMA copy gets owed words as the host GPU has them",
+          "[video_core][buffer_ports]") {
+    OwedFixture f;
+    constexpr u32 real = 0x12345678;
+    f.Owe(0x10100, 0xf1a90004, real);
+    REQUIRE(f.cache->DMACopy(0x100100, 0x100200, 4));
+    CHECK(f.Guest(0x10200) == real);
+    CHECK(f.Host(0x10200) == real);
+    // A copy over half of an owed word: the other half is its slot word's.
+    f.Owe(0x10300, 0xf1a90005, 0x9abcdef0);
+    REQUIRE(f.cache->DMACopy(0x100100, 0x100300, 2));
+    CHECK(f.Guest(0x10300) == 0x9abc5678);
+    CHECK(f.Host(0x10300) == 0x9abc5678);
+    CHECK_FALSE(f.runtime.Nx2Owes(0x10000, 0x10000));
+}
+
+TEST_CASE("List words: a host GPU write over part of an owed word downloads all of it",
+          "[video_core][buffer_ports]") {
+    OwedFixture f;
+    f.Owe(0x10100, 0xf1a90004, 0x12345678);
+    Access::MarkWritten(*f.cache, f.id, 0x10100, 2);
+    // The shader writes the low half.
+    Access::Get(*f.cache, f.id).bytes[0x100] = 0xaa;
+    Access::Get(*f.cache, f.id).bytes[0x101] = 0xbb;
+    const std::array<std::pair<DAddr, u64>, 1> ranges{{{0x10100, 4}}};
+    Access::Download(*f.cache, ranges);
+    CHECK(f.Guest(0x10100) == 0x1234bbaa);
+    CHECK_FALSE(f.runtime.Nx2Owes(0x10100, 4));
 }
 
 TEST_CASE("Newer bytes that guest memory doesn't hold yet land the read downloads under them first",

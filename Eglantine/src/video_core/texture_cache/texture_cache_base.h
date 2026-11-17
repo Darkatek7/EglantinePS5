@@ -290,6 +290,13 @@ public:
     /// Mark an image as modified from the GPU
     void MarkModification(ImageId id) noexcept;
 
+    /// Mark the image behind a view a shader writes through as a storage image
+    void MarkStorageWrite(ImageViewId id) noexcept;
+
+    /// Whether a view's image is absent or holds a shader's storage writes over every level it
+    /// covers, with nothing newer (no clear, render pass, copy or CPU write since).
+    [[nodiscard]] bool StorageViewHoldsShaderWrites(ImageViewId id) const noexcept;
+
     /// Fill image_view_ids with the graphics/compute images in indices
     void FillImageViews(std::span<ImageViewInOut> views, bool compute, bool blacklist = true);
 
@@ -349,6 +356,10 @@ public:
     /// Find a framebuffer with the currently bound render targets
     /// UpdateRenderTargets should be called before this
     Framebuffer* GetFramebuffer();
+
+    /// Whether render target `index` was first written in an earlier frame: a target the title
+    /// draws every frame, rather than one it fills once (Eglantine #874).
+    [[nodiscard]] bool ColorTargetWrittenBeforeThisFrame(u32 index) noexcept;
 
     [[nodiscard]] const RenderTargets& GetRenderTargets() const noexcept {
         return render_targets;
@@ -677,6 +688,9 @@ private:
     /// True while a clear binds its render targets (UpdateRenderTargets(true)), so JoinImages can
     /// skip the upload of a new target the clear overwrites whole.
     bool clearing_render_targets = false;
+    /// True while a draw binds its render targets (UpdateRenderTargets(false)): only these writes
+    /// set first_written_frame, not blits, copies or DMA.
+    bool drawing_render_targets = false;
     bool is_rescaling = false;
     u64 total_used_memory = 0;
     u64 minimum_memory;
