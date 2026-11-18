@@ -15,7 +15,7 @@
 //     "accessibility": { "large_text": false, "high_contrast": false, "reduce_motion": false },
 //     "launcher": { "theme": "eglantine", "accent": "" },
 //     "diagnostics": { "detailed_logging": false, "immediate_logs": false },
-//     "performance": { "block_list": false, "async_shaders": false, "fast_gpu": false,
+//     "performance": { "block_list": false, "async_shaders": true, "fast_gpu": false,
 //                      "unsafe_cpu": false, "unsafe_dma": false, "reactive_flushing": true,
 //                      "skip_invalidation": false },
 //     "game_files": "/mnt/ext1/eden",
@@ -667,7 +667,7 @@ inline std::atomic<uint64_t> session_title{0};
 // game's own.
 struct PerformanceSettings {
     bool block_list = false;     // compile the blocks of earlier sessions ahead (jit_list.h)
-    bool async_shaders = false;  // draw before a new shader is ready: no pause, things missing meanwhile
+    bool async_shaders = true;   // draw before a new shader is ready: no pause, things missing meanwhile
     bool fast_gpu = false;       // Eden's lowest GPU accuracy
     bool unsafe_cpu = false;     // dynarmic's inexact floating-point shortcuts
     bool unsafe_dma = false;     // Eden's unsafe DMA accuracy

@@ -35,6 +35,7 @@
 #include "video_core/nx2_profile.h"
 #include "video_core/render_trace.h"
 #include "video_core/texture_cache/conversion.h"
+#include "video_core/texture_cache/eviction_age.h"
 #include "video_core/texture_cache/host_memory_limit.h"
 #include "video_core/texture_cache/host_mip_limits.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -154,13 +155,16 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     bool high_priority_mode = false;
     bool aggressive_mode = false;
     bool evict_old_costly = false;
+    bool evict_bad_overlaps = false;
+    u64 mode_age = 0;
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
     const auto Configure = [&](bool allow_aggressive) {
         high_priority_mode = out_of_memory || total_used_memory >= expected_memory;
         aggressive_mode =
             allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
-        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+        mode_age = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+        ticks_to_destroy = EvictionAge(mode_age, total_used_memory, retention_limit, out_of_memory);
         // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
         static const u64 min_age = [] {
             const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
@@ -170,9 +174,12 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
     const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
-                          &evict_old_costly, out_of_memory](ImageId image_id) {
+                          &evict_old_costly, &evict_bad_overlaps, out_of_memory](ImageId image_id) {
         if (num_iterations == 0) {
             return true;
+        }
+        if (evict_bad_overlaps && False(slot_images[image_id].flags & ImageFlagBits::BadOverlap)) {
+            return false;
         }
         --num_iterations;
         auto& image = slot_images[image_id];
@@ -219,11 +226,20 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
     // used). Among the oldest candidates (8 per image this pass may delete), those in the
     // emptiest blocks go first, so blocks drain and go back to the driver; placement already
     // prefers the fullest blocks (best fit). Images with memory of their own sit in the middle.
-    const auto Collect = [&] {
+    const auto Collect = [&](u64 age_override = 0) {
+        const u64 required_age = age_override != 0 ? age_override : ticks_to_destroy;
+        if (num_iterations == 0 || frame_tick < required_age) {
+            return;
+        }
+        const u64 last_tick = frame_tick - required_age;
         if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
             std::vector<ImageId> candidates;
             const size_t limit = num_iterations * 8;
-            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, [&](ImageId image_id) {
+            lru_cache.ForEachItemBelow(last_tick, [&](ImageId image_id) {
+                if (evict_bad_overlaps &&
+                    False(slot_images[image_id].flags & ImageFlagBits::BadOverlap)) {
+                    return false;
+                }
                 candidates.push_back(image_id);
                 return candidates.size() >= limit;
             });
@@ -261,10 +277,20 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
                 }
             }
         } else {
-            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+            lru_cache.ForEachItemBelow(last_tick, Cleanup);
         }
     };
     Configure(false);
+    // Images newer ones partly overwrote (BadOverlap: their bytes belong to the newer images, so
+    // they are dropped without a download) get the mode's age, not the retention floor. Ocarina
+    // allocates each frame's render targets at shifting offsets of a transient heap: in the
+    // Skulltula House about 9 a frame, kept 150 frames, filled 16 GB of a 24 GB card (#1755).
+    // Same pass as kraibse 662af0bfaf's EDEN_NX2_TC_STALE_AGE, at the mode's age.
+    if (ticks_to_destroy > mode_age) {
+        evict_bad_overlaps = true;
+        Collect(mode_age);
+        evict_bad_overlaps = false;
+    }
     static const u64 old_age = [] {
         const char* value = std::getenv("EDEN_NX2_TC_OLD_AGE");
         return value != nullptr ? std::strtoull(value, nullptr, 10) : 1800ULL;
@@ -430,6 +456,7 @@ void TextureCache<P>::TickFrame() {
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
+                retention_limit = 0;
                 if (budget > 2_GiB) {
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
@@ -454,6 +481,8 @@ void TextureCache<P>::TickFrame() {
                             ? HostCriticalMemory(runtime.GetDeviceMemoryUsage(), *commit_room)
                             : (std::numeric_limits<u64>::max)();
                     critical_memory = (std::min)(critical_memory, host_critical);
+                    const u64 room_margin = (std::min)(pressure_margin + slack_margin, budget / 2);
+                    retention_limit = (std::min)(budget - room_margin, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
                     // Log the first values and real changes (the budget moves by a few MiB all
@@ -682,6 +711,24 @@ typename P::ImageView& TextureCache<P>::GetImageView(u32 index) noexcept {
 template <class P>
 void TextureCache<P>::MarkModification(ImageId id) noexcept {
     MarkModification(slot_images[id]);
+}
+
+template <class P>
+void TextureCache<P>::MarkStorageWrite(ImageViewId id) noexcept {
+    const ImageViewBase& view = slot_image_views[id];
+    if (!view.image_id) {
+        return;
+    }
+    ImageBase& image = slot_images[view.image_id];
+    const u32 levels_before = image.storage_written_levels;
+    MarkModification(image);
+    NoteStorageWrite(image, levels_before, view.range);
+}
+
+template <class P>
+bool TextureCache<P>::StorageViewHoldsShaderWrites(ImageViewId id) const noexcept {
+    const ImageViewBase& view = slot_image_views[id];
+    return !view.image_id || HoldsStorageWrites(slot_images[view.image_id], view.range);
 }
 
 template <class P>
@@ -1102,12 +1149,15 @@ template <class P>
 void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     using namespace VideoCommon::Dirty;
     struct ClearingScope {
-        bool& flag;
+        bool& clearing;
+        bool& drawing;
         ~ClearingScope() {
-            flag = false;
+            clearing = false;
+            drawing = false;
         }
-    } clearing_scope{clearing_render_targets};
+    } clearing_scope{clearing_render_targets, drawing_render_targets};
     clearing_render_targets = is_clear;
+    drawing_render_targets = !is_clear;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
         for (size_t index = 0; index < NUM_RT; ++index) {
@@ -1181,6 +1231,39 @@ typename P::Framebuffer* TextureCache<P>::GetFramebuffer() {
     last_framebuffer_id = framebuffer_id;
     last_framebuffer_serial = render_targets_serial;
     return &slot_framebuffers[framebuffer_id];
+}
+
+template <class P>
+bool TextureCache<P>::ColorTargetWrittenBeforeThisFrame(u32 index) noexcept {
+    if (!maxwell3d || index >= rt_image_id.size()) {
+        return false;
+    }
+    const auto& regs = maxwell3d->regs;
+    const auto& rt = regs.rt[index];
+    const GPUVAddr gpu_addr = rt.Address();
+    if (gpu_addr == 0 || rt.format == Tegra::RenderTargetFormat::NONE) {
+        return false;
+    }
+    std::scoped_lock lock{mutex};
+    ImageId image_id{};
+    if (!maxwell3d->dirty.flags[Dirty::RenderTargets] &&
+        !maxwell3d->dirty.flags[Dirty::ColorBuffer0 + index]) {
+        image_id = rt_image_id[index];
+    } else {
+        const ImageInfo info(rt, regs.anti_alias_samples_mode);
+        if (info.format == PixelFormat::Invalid || info.size.width == 0 || info.size.height == 0 ||
+            info.size.depth == 0 || info.size.width > 65536 || info.size.height > 65536 ||
+            info.size.depth > 2048 || info.resources.layers <= 0 ||
+            info.resources.layers > 2048) {
+            return false;
+        }
+        image_id = FindImage(info, gpu_addr, RelaxedOptions{});
+    }
+    if (!image_id) {
+        return false;
+    }
+    const ImageBase& image = slot_images[image_id];
+    return image.first_written_frame != 0 && image.first_written_frame < frame_tick + 1;
 }
 
 template <class P>
@@ -2170,6 +2253,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::TextureUpload};
 
     image.flags &= ~ImageFlagBits::CpuModified;
+    image.storage_written_levels = 0;
 
     // Images uploaded by layer stay tracked while some of their layers are dirty.
     if (False(image.flags & ImageFlagBits::Tracked)) {
@@ -4321,6 +4405,7 @@ void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
         ArmImageReadTraps(image);
     }
     image.flags |= ImageFlagBits::GpuModified;
+    image.storage_written_levels = 0;
     SetModificationTick(slot_images, image, ++modification_tick);
 }
 
@@ -4389,6 +4474,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     }
     SetModificationTick(slot_images, image, most_recent_tick);
     image.newest_alias_tick = most_recent_tick;
+    image.storage_written_levels = 0;
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
     }
@@ -4470,6 +4556,9 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
             VideoCommon::Nx2FastDraw::Break(VideoCommon::Nx2FastDraw::Reason::Invalidation);
         }
         MarkModification(image);
+        if (drawing_render_targets && image.first_written_frame == 0) {
+            image.first_written_frame = frame_tick + 1;
+        }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }

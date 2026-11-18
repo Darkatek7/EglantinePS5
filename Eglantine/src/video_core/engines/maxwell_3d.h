@@ -3280,6 +3280,8 @@ public:
     static bool IsFastDrawDeltaMethod(u32 method);
     /// A vertex stream's address, size or limit (not its stride or enable).
     static bool IsFastDrawVertexBuffer(u32 method);
+    /// Counter resets and the render enable mode: query state every draw applies itself.
+    static bool IsFastDrawQueryMethod(u32 method);
     void NoteFastDrawConstantData(GPUVAddr begin, GPUVAddr end);
 
     /// Handles a write to the CB_DATA[i] register.

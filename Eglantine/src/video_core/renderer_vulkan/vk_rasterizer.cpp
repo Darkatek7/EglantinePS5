@@ -2270,10 +2270,16 @@ void RasterizerVulkan::DispatchCompute() {
     const bool marking_effects = oot_effects_frame == render_trace_frame && OcarinaTemporalEnabled() &&
                                  !indirect_address && !frame_dump.Capturing();
     ComputePipeline::BindCommand deferred_bind;
-    if (!pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
-                             texture_cache, texture_cache_runtime, byte_addressed_shadow,
-                             can_replace || marking_effects ? &deferred_bind : nullptr)) {
+    switch (pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache,
+                                texture_cache, texture_cache_runtime, pipeline_cache,
+                                byte_addressed_shadow,
+                                can_replace || marking_effects ? &deferred_bind : nullptr)) {
+    case ComputePipeline::ConfigureResult::Ready:
+        break;
+    case ComputePipeline::ConfigureResult::Failed:
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute resources unavailable");
+        return;
+    case ComputePipeline::ConfigureResult::Skipped:
         return;
     }
     SCOPE_EXIT {
@@ -2460,9 +2466,10 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
-    // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
-    // the longer DeferFlush interval (#161).
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick())) {
+    // Batched like fences (DeferFlush): one submission per dispatch was ~6,000 a second in Hyrule
+    // Warriors: Age of Imprisonment fights. A front that waits on a copy whose tick isn't
+    // submitted yet has the back submit it between entries (IsGpuTickDone, WaitSubmittedTick).
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
         scheduler.Flush();
     }
 }
@@ -2554,6 +2561,11 @@ void RasterizerVulkan::FinishRead(DAddr addr, u64 size) {
 }
 
 bool RasterizerVulkan::NoteReportPending(DAddr addr, u64 size) {
+    // A report per draw (Ocarina of Time's occlusion counts), rarely on a page the guest reads
+    // back: most skip the buffer cache's lock.
+    if (!buffer_cache.MayBeReadBackPage(addr)) {
+        return false;
+    }
     std::scoped_lock lock{buffer_cache.mutex};
     return buffer_cache.NoteReportPending(addr, size);
 }
@@ -2605,7 +2617,11 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
         texture_area = texture_cache.GetFlushArea(addr, size);
     }
 #else // PS5
-    {
+    // Guest cores ask this on reads of cached pages, and the back holds both caches' locks through
+    // each draw. Pages no image was ever registered on, and Switch 2 pages the GPU never wrote,
+    // get the clean area the caches would return without a look under their locks (after
+    // Stephen Jayakar's EDEN_NX2_READ_FASTPATH, eb3553bcb8).
+    if (texture_cache.page_filter.Any(addr, size)) {
         std::scoped_lock lock{texture_cache.mutex};
         texture_area = texture_cache.GetFlushArea(addr, size);
     }
@@ -2619,7 +2635,9 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
                                      texture_area->end_address - texture_area->start_address);
         return *texture_area;
     }
-    if (buffer_cache.FlushesOnCpuRead()) {
+    if (buffer_cache.FlushesOnCpuRead() &&
+        (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+         Tegra::Nx2MayBeGpuWritten(addr, size))) {
         std::scoped_lock lock{buffer_cache.mutex};
         auto area = buffer_cache.GetFlushArea(addr, size);
         if (area) {
@@ -2715,17 +2733,46 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
             ::Eden::Performance::DeferWrite(addr, size, ::Eden::Performance::cpu_write_core);
             return false;
         }
-        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
-        if (buffer_cache.OnCPUWrite(addr, size)) {
-            return true;
-        }
-        const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
-        DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
-        for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
-            if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
-                buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
-                break;
+        // The pages the write untracks change their host protection after the lock is dropped:
+        // drawing waited for those system calls (~1 µs each, thousands a second at Ocarina of
+        // Time's water). A write trapping on a page still protected until then finds the page
+        // already untracked and changes nothing. Off the scheduler's owner the write only
+        // untracks pages (BufferCache::WriteMemory uploads only on the owner), which is all that
+        // may wait. Device unmaps wait for these changes, as one applied to an unmapped page is
+        // lost (BeginDeferredCachedUpdates).
+        static thread_local VideoCommon::DeferredPageCaching deferred;
+        const bool defer = VideoCommon::t_deferred_page_caching == nullptr &&
+                           !VideoCommon::GpuSplit::OwnsScheduler();
+        bool gpu_modified;
+        {
+            std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = &deferred;
             }
+            gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            if (!gpu_modified) {
+                const unsigned ahead = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
+                DAddr page = Common::AlignDown(addr + size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
+                for (unsigned marked = 0; marked < ahead; ++marked, page += Core::DEVICE_PAGESIZE) {
+                    if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
+                        buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE)) {
+                        break;
+                    }
+                }
+            }
+            if (defer) {
+                VideoCommon::t_deferred_page_caching = nullptr;
+                if (!deferred.Empty()) {
+                    device_memory.BeginDeferredCachedUpdates();
+                }
+            }
+        }
+        if (defer && !deferred.Empty()) {
+            deferred.ApplyAll();
+            device_memory.EndDeferredCachedUpdates();
+        }
+        if (gpu_modified) {
+            return true;
         }
     }
     if (texture_cache.page_filter.Any(addr, size)) {
@@ -2912,6 +2959,13 @@ void RasterizerVulkan::FlushCommands() {
     }
     draw_counter = 0;
     pending_native_work = false;
+    // A fence with a download is submitted by InnerFence::Queue, and SignalFence then comes here
+    // with nothing recorded since: ~4,600 empty submits a second in Ocarina of Time's Castle
+    // Town, each followed by a full rebind (from Fritchii c338269b92).
+    if (!scheduler.RecordedSinceSubmit()) {
+        Scheduler::CountSkippedFlush();
+        return;
+    }
     // Fences with downloads or queries come here right after queueing: ~9,400 a second in
     // Hyrule Warriors: Age of Imprisonment fights. Batched like the fences themselves.
     if (!scheduler.DeferFlush()) {

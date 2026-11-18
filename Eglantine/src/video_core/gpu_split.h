@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 #include "common/common_types.h"
+#include "common/container/unordered_map.h"
 
 namespace Core {
 class System;
@@ -69,6 +70,12 @@ struct AcquireStats {
     std::atomic<u64> polls{};     ///< Polls that keep waiting without a drain
     std::atomic<u64> acquire_polls{}; ///< Polls of suspended channels waiting on an acquire
     std::atomic<u64> list_polls{};    ///< ...and on a command list copy the GPU writes
+    std::atomic<u64> front_polls{};   ///< GPU thread waits for them in hardware (gpu_thread.cpp)
+    std::atomic<u64> front_sleeps{};  ///< ...and in the OS
+    std::atomic<u64> front_woken{};   ///< Of those: ended by a wake (Nx2PendingWake)
+    std::atomic<u64> front_stored{};  ///< ...by a store to a word a channel waits on (WordStored)
+    std::atomic<u64> front_found_polling{}; ///< Channels found moving by a timed-out hardware wait
+    std::atomic<u64> front_found_late{};    ///< ...and by a timed-out OS wait, after the poll
     std::atomic<u64> early_publishes{}; ///< Publishes to a back that waits for work (Commit)
     std::atomic<u64> settles{};   ///< Idle hooks asked of a back that ran everything (SettleIdleBack)
     std::atomic<u64> back_waits{};      ///< The back ran out of work
@@ -445,7 +452,7 @@ private:
         bool known;
     };
     /// The front's NoteSemaphoreWrite, by word address.
-    std::unordered_map<u64, SemaphoreWrite> semaphore_writes;
+    Common::unordered_map<u64, SemaphoreWrite> semaphore_writes;
     size_t semaphore_writes_limit = 1024; ///< Forget what the back ran past this many
     /// After the last entry that may write guest memory anywhere (NoteAnyWrite), the last one
     /// NoteWrite placed, and the last placed write in each slot's granules.

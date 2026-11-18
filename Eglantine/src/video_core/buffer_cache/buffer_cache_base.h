@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <array>
 #include <bit>
@@ -316,6 +317,15 @@ public:
     /// The query cache wrote a result NoteReportPending kept to guest memory, or dropped it.
     void FinishReport(DAddr device_addr, u64 size);
 
+    /// Without `mutex`: false when the page under device_addr can't be one the guest reads back
+    /// (NoteReportPending would return false). Seeing the bounds before a page joins them is
+    /// the same as looking before that read took the lock.
+    [[nodiscard]] bool MayBeReadBackPage(DAddr device_addr) const noexcept {
+        const DAddr page = Common::AlignDown(device_addr, Core::DEVICE_PAGESIZE);
+        return page >= read_back_first.load(std::memory_order_acquire) &&
+               page <= read_back_last.load(std::memory_order_acquire);
+    }
+
     /// The GPU thread recorded a draw or dispatch (`mutex` held). After a dispatch, the downloads
     /// of the pages written since that the guest reads after each write go right behind it
     /// (RecordEarlyDownloads). Those the host GPU has run land in guest memory.
@@ -453,6 +463,13 @@ public:
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
+
+    /// Whether every byte the bound compute storage and texture buffers would mark GPU-written
+    /// for this dispatch already holds GPU writes. Call before the bindings are made (and mark).
+    [[nodiscard]] bool ComputeWritesHoldGpuData();
+
+    /// Whether every byte of the range holds GPU writes (a DMA clear or CPU write removes them).
+    [[nodiscard]] bool IsRegionFullyGpuModified(DAddr addr, size_t size);
 
     /// Visits the uniform and storage buffers bound for the last draw or dispatch with the cached
     /// host buffer holding each range, if one does, for diagnostics. Nothing is
@@ -1045,14 +1062,22 @@ private:
     };
     /// Reads of a page's writes in a row before its writes get early downloads.
     static constexpr u16 EarlyAfterReads = 2;
-    /// Writes in a row without a read that stop them.
-    static constexpr u16 MaxUnreadWrites = 4;
-    static constexpr size_t MaxReadBackPages = 64;
+    /// Writes in a row without a read that stop them. A page the guest reads every few frames
+    /// keeps them: Ocarina of Time reads each of its read-back pages every 5 to 40 frames, and
+    /// several dispatches write it in between.
+    static constexpr u16 MaxUnreadWrites = 256;
+    /// Learned pages; the one read longest ago makes room. Ocarina of Time reads back ~220 pages
+    /// over a few seconds.
+    static constexpr size_t MaxReadBackPages = 512;
     /// Early download bytes a frame, and early downloads not yet in guest memory: past them, reads
-    /// flush on demand.
-    static constexpr u64 EarlyBytesPerFrame = 1_MiB;
-    static constexpr u32 MaxPendingEarlyDownloads = 32;
+    /// flush on demand. These limits only decide which downloads are recorded early, never what a
+    /// read finds: a read that no early download covers flushes.
+    static constexpr u64 EarlyBytesPerFrame = 8_MiB;
+    static constexpr u32 MaxPendingEarlyDownloads = 512;
     std::vector<ReadBackPage> read_back_pages; ///< Sorted by page
+    /// The first and last page of read_back_pages (MayBeReadBackPage), set under `mutex`.
+    std::atomic<DAddr> read_back_first{~DAddr{0}};
+    std::atomic<DAddr> read_back_last{0};
     /// NoteReportPending's results not yet written, oldest first.
     struct PendingReport {
         DAddr addr;
