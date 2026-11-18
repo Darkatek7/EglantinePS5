@@ -370,9 +370,10 @@ int main() {
     assert(Eden::SaveGameSettings(racer, game, file));
 
     // Performance ("performance", and one per title): the block list and the trade-offs off
-    // unless chosen. A title's own values go before the general ones, one value at a time.
+    // unless chosen, except asynchronous shaders, which are on (a new shader pops in instead of
+    // freezing the game). A title's own values go before the general ones, one value at a time.
     auto speed = Eden::LoadPerformance(racer, file);
-    assert(!speed.block_list && !speed.async_shaders && !speed.fast_gpu && !speed.unsafe_cpu && !speed.unsafe_dma);
+    assert(!speed.block_list && speed.async_shaders && !speed.fast_gpu && !speed.unsafe_cpu && !speed.unsafe_dma);
     assert(Eden::SavePerformance(0, {true, true, false, false, false}, file));  // title 0: general
     speed = Eden::LoadPerformance(racer, file);
     assert(speed.block_list && speed.async_shaders && !speed.fast_gpu);
@@ -390,7 +391,7 @@ int main() {
     std::ofstream(by_hand) << R"({"performance": {"fast_gpu": true, "unsafe_cpu": "yes"},
         "games": {"0100000000010000": {"performance": {"block_list": true}}}})";
     speed = Eden::LoadPerformance(racer, by_hand);
-    assert(speed.block_list && speed.fast_gpu && !speed.unsafe_cpu && !speed.async_shaders);
+    assert(speed.block_list && speed.fast_gpu && !speed.unsafe_cpu && speed.async_shaders);
     assert(!Eden::LoadPerformance(quest, by_hand).block_list);
     // Reactive flushing is on and skipping the CPU's invalidation off unless chosen; both are
     // saved with the rest and a title can have its own.
