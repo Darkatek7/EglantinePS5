@@ -46,10 +46,25 @@ namespace Tegra::Nx2ListIndirect::Stats {
 // A plain flag: checked at every list the host GPU takes over.
 inline bool g_check = std::getenv("EDEN_NX2_LIST_INDIRECT_CHECK") != nullptr;
 
+/// Whether the host GPU keeps GPU-written list words at all (EDEN_NX2_LIST_INDIRECT=0/1).
+/// EglantinePS5: off by default on PS5, where Zelda: Ocarina of Time measured about 3-4% slower
+/// with it (Kokiri Forest, 31.5-32.2 FPS with it against 33.1-33.5 without).
+#if !defined(__PROSPERO__) // not PS5
+inline constexpr bool DefaultOn = true;
+#else // PS5
+inline constexpr bool DefaultOn = false;
+#endif // PS5
+inline bool ReadOn() {
+    const char* const value = std::getenv("EDEN_NX2_LIST_INDIRECT");
+    return value != nullptr && value[0] != '\0' ? value[0] != '0' : DefaultOn;
+}
+inline bool g_on = ReadOn();
+
 /// Called by VideoCore::CreateGPU: static initialization runs before the frontend loads
 /// nx2_switches.txt, so a switch set only there takes effect from that point on.
 inline void ReadSwitch() {
     g_check = std::getenv("EDEN_NX2_LIST_INDIRECT_CHECK") != nullptr;
+    g_on = ReadOn();
 }
 
 [[nodiscard]] inline bool Enabled() {
