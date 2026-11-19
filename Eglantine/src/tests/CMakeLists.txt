@@ -18,6 +18,7 @@ add_executable(tests
     video_core/semaphore_waiters.cpp
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
+    core/nx2_thread_stats.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
     common/dkb_cpu_trace.cpp
@@ -99,6 +100,7 @@ add_executable(tests
     video_core/split_fence_wait.cpp
     video_core/nx2_written_pages.cpp
     video_core/command_snapshot_suspensions.cpp
+    video_core/safe_command_reads.cpp
     video_core/pending_maps.cpp
     video_core/maxwell_fast_method.cpp
     hid_core/sensor_info.cpp
