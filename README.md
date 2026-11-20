@@ -10,7 +10,7 @@
 
 **EglantinePS5 is an unofficial PlayStation 5 port of [Eglantine](https://github.com/Djihads80/Eglantine)**, a Switch 2 capable fork of [Eden](https://github.com/eden-emulator/mirror) - an accurate, high-performance emulator. All credit for the emulator core belongs to the Eglantine and Eden projects and their contributors. EglantinePS5 is not affiliated with or endorsed by the Eglantine team, the Eden team or Sony.
 
-This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.002** (a pre-release).
+This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.003** (a pre-release).
 
 ## Source code
 
@@ -369,6 +369,20 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 ### Upgrading from an earlier alpha
 
 Earlier versions read everything from `/data/homebrew/PPSA98515/assets/`. That folder keeps working until you choose a game files folder, and settings are migrated automatically on first launch. To move to the new layout, move `assets/keys`, `assets/firmware` and `assets/roms` into any folder, then select it in **Settings > Game files**. The release ZIP contains no user files, so copy its app files over your installation without deleting your own data.
+
+## Changes in v1.000.003
+
+Pre-release. 21 pull requests since v1.000.002, most of them upstream Eglantine work ported to the PS5.
+
+- **Zelda: Ocarina of Time runs faster.** 29 upstream Zelda fixes and speedups are ported (empty GPU submits skipped, cheaper command-list copies and query reports, faster fast-draw paths, x86-64 JIT code generation). In our console test scene it went from about 30 FPS to 32–33.5 FPS.
+- **Zelda: the dark grid on the water is gone** (the game's light-table shadow maps are bound correctly).
+- **Zelda: no more shader stutter in warm sessions.** The ~80 pipelines that were built mid-game each session (about 2 s of hitches) are now built from the cache at launch.
+- **Zelda: Ocarina of Time 2.0.0 (update v131072) no longer stops after the intro** (play-report session command 10500 is handled).
+- **Asynchronous shader building is on by default** (Settings > Video).
+- **Fire Emblem: Fortune's Weave boots** instead of stopping on a black screen with a GPU fault, and its picture is upscaled with FSR 3.1 temporal by default, which removes the jagged, crawling edges around characters.
+- **Pokémon Pokopia:** the sky is no longer black; it no longer crashes with a GPU hang after 5–20 minutes of play; and starting it from a `.nup` no longer takes 30+ minutes on every launch (large decoded parts of the container are kept in the cache and reused).
+- **Less memory use:** about 250 MiB less heap in use (smaller JIT dispatch and GPU page tables), smaller starting descriptor queues, and about 4.7 GB less allocation churn per Mario Kart World session.
+- **Known issue: Mario Kart World still crashes** early in a session (out of GPU memory).
 
 ## Changes in v1.000.002
 
